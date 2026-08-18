@@ -357,7 +357,7 @@ class LogVaultHandler(logging.Handler):
             if "all" in self.handlers:
                 self.handlers["all"].emit(record)
 
-            plugin_name = LogRouter.extract_plugin_name(record.pathname)
+            plugin_name = LogRouter.extract_plugin_name_from_record(record)
             if plugin_name and self.config.get("enable_plugin_separation", True):
                 self.get_plugin_handler(plugin_name).emit(record)
             elif "core" in self.handlers:
