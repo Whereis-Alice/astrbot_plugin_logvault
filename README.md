@@ -53,7 +53,7 @@ LogVault 为 AstrBot 增加可靠的日志文件留存、分类、轮换、压�
 
 ### 为什么旧导出里只有 LogVault 自己的日志？
 
-AstrBot 4.27 将插件日志改为独立的 `astrbot.plugin.<插件名>` logger，并设置 `propagate=False`。上游 LogPlus 只把 Handler 加到一个全局 logger 上，因此它在新版 AstrBot 中看不到其他插件的记录；这不是 Dynamic Card Plus 没有产生日志。LogVault 2.0.3 会同时连接全局 logger、已有的专属 logger，并在后续插件加载时继续连接新 logger。
+AstrBot 4.27 将插件日志改为独立的 `astrbot.plugin.<插件名>` logger，并设置 `propagate=False`。上游 LogPlus 调用 `logger.addHandler()` 时，`astrbot.api.logger` 会解析到 LogPlus 自己的专属 logger，因此它在新版 AstrBot 中看不到其他插件的记录；这不是 Dynamic Card Plus 没有产生日志。LogVault 2.0.3 会同时连接全局 logger、已有的专属 logger，并在后续插件加载时继续连接新 logger。
 
 你提供的旧备份还存在另一种历史结构：
 
