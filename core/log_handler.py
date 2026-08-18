@@ -351,6 +351,15 @@ class LogVaultHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord):
         try:
+            seen_handlers = getattr(record, "_logvault_seen_handlers", None)
+            if seen_handlers is None:
+                seen_handlers = set()
+                record.__dict__["_logvault_seen_handlers"] = seen_handlers
+            handler_id = id(self)
+            if handler_id in seen_handlers:
+                return
+            seen_handlers.add(handler_id)
+
             if self.sensitive_filter:
                 record = self.sensitive_filter.mask_record(record)
 

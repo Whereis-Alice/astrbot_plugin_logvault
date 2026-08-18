@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import gzip
 import os
+import re
 import zipfile
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
@@ -12,6 +13,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from .log_cleaner import LogCleaner
+
+
+_LOG_RECORD_START_RE = re.compile(r"^\s*\[\d{4}-\d{2}-\d{2}[ T]")
 
 
 def _is_log_file(path: Path) -> bool:
@@ -383,7 +387,7 @@ class CommandHandler:
                         return message, zip_path
                 message = (
                     f"❌ 已识别插件 '{plugin_name}'，但最近 {days} 天没有捕获到它的日志文件\n"
-                    "LogVault 只能发送安装并启动后记录到的日志。"
+                    "旧进程在 LogVault 接入前写出的控制台记录无法回溯；请更新到 2.0.3 并重启 AstrBot 后再产生一条日志。"
                 )
                 return message, None
             return f"❌ 最近 {days} 天没有找到可发送的日志文件", None
@@ -480,13 +484,7 @@ class CommandHandler:
                 # AstrBot's backend file may format one record over three lines;
                 # a new timestamp starts the next record. LogVault's formatter
                 # emits one line per record and works with the same boundary.
-                if (
-                    current
-                    and len(line) >= 12
-                    and line[0] == "["
-                    and line[5] == "-"
-                    and line[8] == "-"
-                ):
+                if current and _LOG_RECORD_START_RE.match(line):
                     flush()
                     current = []
                     matched = False

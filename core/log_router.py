@@ -4,6 +4,7 @@ from pathlib import Path
 
 
 _PLUGIN_ID_RE = re.compile(r"(?<![A-Za-z0-9_])astrbot_plugin_[A-Za-z0-9_]+", re.IGNORECASE)
+_PLUGIN_LOGGER_PREFIX = "astrbot.plugin."
 
 
 def _path_parts(pathname: str | os.PathLike[str]) -> tuple[str, ...]:
@@ -117,6 +118,12 @@ class LogRouter:
         plugin_name = LogRouter.extract_plugin_name(pathname or "")
         if plugin_name:
             return plugin_name
+
+        logger_name = str(getattr(record, "name", "") or "")
+        if logger_name.casefold().startswith(_PLUGIN_LOGGER_PREFIX):
+            plugin_name = logger_name[len(_PLUGIN_LOGGER_PREFIX) :].strip()
+            if plugin_name:
+                return plugin_name
 
         for attribute in ("plugin_name", "plugin_id", "star_name"):
             plugin_name = LogRouter._extract_explicit_plugin_name(

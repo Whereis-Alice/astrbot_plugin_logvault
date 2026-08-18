@@ -13,6 +13,7 @@ if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
 from core.command_handler import CommandHandler
+from core.config_manager import ConfigManager
 from core.log_cleaner import LogCleaner
 from core.log_handler import LogVaultHandler
 from core.sensitive_filter import SensitiveFilter
@@ -128,6 +129,52 @@ class LogVaultBehaviourTests(unittest.TestCase):
             finally:
                 handler.close()
 
+    def test_dedicated_astrbot_plugin_logger_is_captured(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            config = {
+                "enable_all_log": True,
+                "enable_core_log": False,
+                "enable_error_log": False,
+                "enable_plugin_separation": True,
+                "max_file_size_mb": 10,
+                "backup_count": 2,
+                "rotation_strategy": "size",
+                "enable_compression": False,
+            }
+            handler = LogVaultHandler(root, config)
+            plugin_logger = logging.getLogger(
+                "astrbot.plugin.astrbot_plugin_dynamic_card_plus"
+            )
+            previous_handlers = list(plugin_logger.handlers)
+            previous_level = plugin_logger.level
+            previous_propagate = plugin_logger.propagate
+            try:
+                plugin_logger.handlers = []
+                plugin_logger.setLevel(logging.INFO)
+                plugin_logger.propagate = False
+                plugin_logger.addHandler(handler)
+                plugin_logger.info(
+                    "[astrbot_plugin_dynamic_card_plus] set_group_card succeeded"
+                )
+                output = (
+                    root
+                    / "plugins"
+                    / "astrbot_plugin_dynamic_card_plus"
+                    / "plugin.log"
+                )
+                self.assertTrue(output.exists())
+                self.assertIn(
+                    "set_group_card succeeded",
+                    output.read_text(encoding="utf-8"),
+                )
+            finally:
+                plugin_logger.removeHandler(handler)
+                plugin_logger.handlers = previous_handlers
+                plugin_logger.setLevel(previous_level)
+                plugin_logger.propagate = previous_propagate
+                handler.close()
+
     def test_send_plugin_filters_astrbot_backend_log_fallback(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -194,6 +241,42 @@ class LogVaultBehaviourTests(unittest.TestCase):
             self.assertIn("plugins/astrbot_plugin_demo/plugin.log", names)
             self.assertNotIn("plugins/astrbot_plugin_demo/plugin.log.1.gz", names)
 
+    def test_nested_legacy_plugin_log_file_is_read(self):
+        """Keep compatibility with old exports containing plugin.log/plugin.log."""
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            nested = (
+                root
+                / "plugins"
+                / "astrbot_plugin_dynamic_card_plus"
+                / "plugin.log"
+                / "plugin.log"
+            )
+            nested.parent.mkdir(parents=True)
+            nested.write_text("recent nested log\n", encoding="utf-8")
+
+            command = CommandHandler(root, LogCleaner(root, {}))
+            message, archive_path = asyncio.run(
+                command.handle_send("dynamic_card_plus", 1)
+            )
+
+            self.assertIsNotNone(archive_path)
+            self.assertIn("astrbot_plugin_dynamic_card_plus", message)
+            assert archive_path is not None
+            with zipfile.ZipFile(archive_path) as result:
+                names = result.namelist()
+                contents = "\n".join(
+                    result.read(name).decode("utf-8")
+                    for name in names
+                    if name != "ABOUT.txt"
+                )
+            self.assertIn(
+                "plugins/astrbot_plugin_dynamic_card_plus/plugin.log/plugin.log",
+                names,
+            )
+            self.assertIn("recent nested log", contents)
+
     def test_installed_plugin_is_recognized_before_its_first_log(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -259,6 +342,13 @@ class LogVaultBehaviourTests(unittest.TestCase):
         self.assertEqual(masked.args, ())
         self.assertIn("token=***", masked.getMessage())
         self.assertIn("count=3", masked.getMessage())
+
+    def test_host_log_dirs_accept_multiline_configuration(self):
+        config = ConfigManager({"host_log_dirs": "/srv/astrbot/logs\n/var/log/astrbot"})
+        self.assertEqual(
+            config.get_host_log_dirs(),
+            ["/srv/astrbot/logs", "/var/log/astrbot"],
+        )
 
 
 if __name__ == "__main__":

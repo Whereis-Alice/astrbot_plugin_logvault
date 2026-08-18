@@ -93,5 +93,11 @@
     "hint": "仅用于读取导出和搜索，不会清理这些目录。",
     "type": "list",
     "default": []
+  },
+  "host_log_dirs": {
+    "description": "额外的 AstrBot 共享日志目录（每行一个路径）",
+    "hint": "当 AstrBot 日志写在非默认 data/logs 目录时，用于按插件筛选后台日志；仅读取，不会修改。",
+    "type": "list",
+    "default": []
   }
 }

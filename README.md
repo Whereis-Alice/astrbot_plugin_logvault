@@ -9,6 +9,8 @@ LogVault 为 AstrBot 增加可靠的日志文件留存、分类、轮换、压�
 - 修复 Linux 上“日志目录里只有旧 `.gz`、最近日志没有导出”的问题。旧版清理任务可能压缩或删除仍被 `FileHandler` 打开的当前 `plugin.log`；Linux 允许删除打开的文件，后续内容会写入目录中看不见的 inode。LogVault 只压缩已经轮换、已关闭的日志文件，也不会删除活动日志。
 - 修复 Windows、Linux 和混合路径分隔符下的插件识别，插件日志不会因为路径格式被错误归入 Core。
 - 发送命令会从 AstrBot 插件注册表和 `data/plugins` 识别真实插件 ID，不再把“还没有产生专属日志”误报为“插件不存在”。
+- 兼容 AstrBot 4.27+ 的 `astrbot.plugin.<插件名>` 专属 logger，不依赖旧版本的全局 logger 传播行为。
+- 在插件加载钩子和后台扫描中同时发现新建的专属 logger，避免插件启动顺序导致日志漏记。
 - 导出和搜索会在后台线程执行，减少大日志文件阻塞消息处理的概率；压缩日志保留原始修改时间，按天筛选不会把旧内容误当成新日志。
 - 增加按插件和天数发送：`/logplus send plugin <插件名> <天数>`。
 - 发送/导出默认会读取旧版 `astrbot_plugin_logplus` 数据目录，但只读，不会修改或清理旧目录。
@@ -49,6 +51,18 @@ LogVault 为 AstrBot 增加可靠的日志文件留存、分类、轮换、压�
 
 如果日志已经被 AstrBot 写入默认的 `data/logs/astrbot.log`，但还没有被分流到专属目录，`send plugin` 会按插件 ID 从该后台日志中筛选相关记录，不会打包整份 Core 日志。
 
+### 为什么旧导出里只有 LogVault 自己的日志？
+
+AstrBot 4.27 将插件日志改为独立的 `astrbot.plugin.<插件名>` logger，并设置 `propagate=False`。上游 LogPlus 只把 Handler 加到一个全局 logger 上，因此它在新版 AstrBot 中看不到其他插件的记录；这不是 Dynamic Card Plus 没有产生日志。LogVault 2.0.3 会同时连接全局 logger、已有的专属 logger，并在后续插件加载时继续连接新 logger。
+
+你提供的旧备份还存在另一种历史结构：
+
+```text
+plugins/<插件>/plugin.log/plugin.log
+```
+
+这通常是旧版本轮换或解压过程中留下的目录形态。LogVault 会把它作为只读历史文件读取；如果文件本身已经早于查询天数，按天发送仍会正确排除它，不会把旧记录冒充成最新日志。
+
 ## 日志位置
 
 LogVault 的新数据目录由 AstrBot 的 `StarTools.get_data_dir()` 管理，通常是：
@@ -82,6 +96,7 @@ data/plugin_data/astrbot_plugin_logvault/
 | `sensitive_keywords` | 见配置页 | 逗号分隔的自定义敏感关键词 |
 | `include_legacy_data` | `true` | 是否读取旧版目录 |
 | `legacy_data_dirs` | `[]` | 额外历史目录，每行一个路径 |
+| `host_log_dirs` | `[]` | AstrBot 共享日志的额外目录；默认自动读取 `data/logs` 和核心配置中的日志路径 |
 
 脱敏只影响 LogVault 写入的副本，不会修改 AstrBot 的控制台日志或其他 Handler。发送日志前仍应确认内容不包含不应公开的数据。
 
@@ -91,6 +106,14 @@ data/plugin_data/astrbot_plugin_logvault/
 2. 安装 LogVault 并启动一次，让它创建新的数据目录。
 3. 如果旧日志仍位于默认的 `data/plugin_data/astrbot_plugin_logplus/`，无需复制；LogVault 会自动读取它们。
 4. 如果旧日志在备份目录，填入 `legacy_data_dirs` 后再使用 `send` 或 `export`。
+
+升级后请重启 AstrBot，或在 WebUI 中完整卸载并重新加载 LogVault。已经运行的旧进程不会自动读取 GitHub 上的新代码。重启后先让目标插件产生一条新日志，再执行：
+
+```text
+/logplus send plugin astrbot_plugin_dynamic_card_plus 1
+```
+
+如果使用了自定义 AstrBot 日志路径，LogVault 会从核心配置自动发现；仍未发现时，把该日志所在目录逐行填入 `host_log_dirs`。
 
 旧版曾经因为活动文件被清理而把新日志写到不可见 inode；这些已经丢失的内容无法从文件系统恢复。升级后新产生的日志会写入新的活动文件，并且不会再被后台清理任务删除。
 

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -19,9 +21,11 @@ from .core.sensitive_filter import SensitiveFilter
 
 
 PLUGIN_ID = "astrbot_plugin_logvault"
-PLUGIN_VERSION = "2.0.2"
+PLUGIN_VERSION = "2.0.3"
 LEGACY_PLUGIN_ID = "astrbot_plugin_logplus"
 LOG_LEVELS = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40, "CRITICAL": 50}
+ASTRBOT_PLUGIN_LOGGER_PREFIX = "astrbot.plugin."
+LOGGER_WATCH_INTERVAL_SECONDS = 0.5
 
 
 @register(
@@ -47,6 +51,8 @@ class LogVaultPlugin(Star):
         self.sensitive_filter: SensitiveFilter | None = None
         self.command_handler: CommandHandler | None = None
         self._init_task: asyncio.Task | None = None
+        self._logger_watch_task: asyncio.Task | None = None
+        self._attached_loggers: set[logging.Logger] = set()
 
         try:
             loop = asyncio.get_running_loop()
@@ -128,6 +134,158 @@ class LogVaultPlugin(Star):
             catalog.setdefault(owner, set()).add(root_name)
         return catalog
 
+    def _plugin_logger_names(self) -> set[str]:
+        """Find AstrBot's dedicated logger names across supported versions."""
+
+        names = {PLUGIN_ID, "LogVault"}
+        logger_dict = logging.Logger.manager.loggerDict
+        try:
+            existing_names = list(logger_dict.items())
+        except RuntimeError:
+            existing_names = []
+        names.update(
+            logger_name[len(ASTRBOT_PLUGIN_LOGGER_PREFIX) :]
+            for logger_name, logger_value in existing_names
+            if isinstance(logger_value, logging.Logger)
+            and logger_name.casefold().startswith(ASTRBOT_PLUGIN_LOGGER_PREFIX)
+            and logger_name[len(ASTRBOT_PLUGIN_LOGGER_PREFIX) :].strip()
+        )
+
+        # AstrBot keeps the authoritative set on LogManager as well.  It is
+        # useful during the small window between plugin registration and the
+        # creation of the corresponding logging.Logger instance.
+        try:
+            from astrbot.core.log import LogManager
+
+            manager_names = getattr(LogManager, "_plugin_logger_names", set())
+            names.update(str(name).strip() for name in manager_names if str(name).strip())
+        except (ImportError, AttributeError, RuntimeError, TypeError):
+            pass
+
+        get_all_stars = getattr(self.context, "get_all_stars", None)
+        if callable(get_all_stars):
+            try:
+                stars = get_all_stars()
+            except (AttributeError, RuntimeError, TypeError):
+                stars = []
+            for star in stars:
+                for attribute in ("name", "root_dir_name"):
+                    value = str(getattr(star, attribute, "") or "").strip()
+                    if value:
+                        names.add(value)
+        return {name for name in names if name.strip()}
+
+    def _host_log_dirs(self) -> list[Path]:
+        """Resolve AstrBot's shared log directories for fallback filtering.
+
+        AstrBot normally stores its file sink under ``data/logs``.  Recent
+        versions also allow an absolute or data-relative custom path, so use
+        the live core config when it is available and retain an explicit
+        plugin setting for deployments that keep logs elsewhere.
+        """
+
+        data_root = self.data_dir.parent.parent
+        directories: list[Path] = [data_root / "logs"]
+
+        def add_directory(value: object) -> None:
+            if value is None or str(value).strip() == "":
+                return
+            try:
+                path = Path(str(value)).expanduser()
+                if not path.is_absolute():
+                    path = data_root / path
+                directories.append(path)
+            except (OSError, RuntimeError, TypeError):
+                return
+
+        for value in self.config_manager.get_host_log_dirs():
+            add_directory(value)
+
+        # AstrBot 4.27 uses log_file.path; older releases expose
+        # log_file_path.  Both configured paths point to a file, so add the
+        # parent directory rather than treating the file as a directory.
+        configured_file: object = None
+        get_config = getattr(self.context, "get_config", None)
+        if callable(get_config):
+            try:
+                core_config = get_config()
+            except (AttributeError, RuntimeError, TypeError):
+                core_config = None
+            if core_config is not None:
+                try:
+                    legacy_path = core_config.get("log_file_path")
+                except (AttributeError, TypeError):
+                    legacy_path = None
+                try:
+                    log_file = core_config.get("log_file")
+                except (AttributeError, TypeError):
+                    log_file = None
+                if isinstance(log_file, Mapping):
+                    configured_file = log_file.get("path") or legacy_path
+                else:
+                    configured_file = legacy_path
+
+        if configured_file is not None and str(configured_file).strip():
+            try:
+                file_path = Path(str(configured_file)).expanduser()
+                if not file_path.is_absolute():
+                    file_path = data_root / file_path
+                directories.append(file_path.parent)
+            except (OSError, RuntimeError, TypeError):
+                pass
+
+        result: list[Path] = []
+        seen: set[str] = set()
+        for directory in directories:
+            try:
+                resolved = directory.resolve()
+            except (OSError, RuntimeError):
+                continue
+            key = str(resolved).casefold()
+            if key not in seen:
+                seen.add(key)
+                result.append(resolved)
+        return result
+
+    def _attach_logging_handlers(self) -> None:
+        """Attach LogVault to global and per-plugin loggers.
+
+        AstrBot 4.27+ routes ``astrbot.api.logger`` calls to isolated
+        ``astrbot.plugin.<name>`` loggers with ``propagate=False``.  The
+        global logger alone therefore misses plugin records; older releases
+        only need the global target, so both paths are supported here.
+        """
+
+        if not self.log_handler:
+            return
+        # The parent target preserves compatibility with releases where
+        # plugin loggers propagated.  AstrBot 4.27+ sets propagate=False on
+        # each dedicated logger, so those loggers are attached explicitly.
+        targets = {
+            logging.getLogger("astrbot"),
+            logging.getLogger(ASTRBOT_PLUGIN_LOGGER_PREFIX.rstrip(".")),
+        }
+        targets.update(
+            logging.getLogger(f"astrbot.plugin.{name}")
+            for name in self._plugin_logger_names()
+        )
+        for target in targets:
+            if self.log_handler not in target.handlers:
+                target.addHandler(self.log_handler)
+            self._attached_loggers.add(target)
+
+    async def _logger_watch_loop(self):
+        """Attach to plugin loggers created after LogVault starts."""
+
+        while True:
+            try:
+                await asyncio.sleep(LOGGER_WATCH_INTERVAL_SECONDS)
+                self._attach_logging_handlers()
+            except asyncio.CancelledError:
+                raise
+            except (AttributeError, RuntimeError, TypeError):
+                continue
+
     async def _initialize_plugin(self):
         try:
             config = self.config_manager.as_dict()
@@ -141,7 +299,8 @@ class LogVaultPlugin(Star):
             )
             level_name = str(config.get("log_level", "DEBUG")).upper()
             self.log_handler.setLevel(LOG_LEVELS.get(level_name, logging_level_default()))
-            logger.addHandler(self.log_handler)
+            self._attach_logging_handlers()
+            self._logger_watch_task = asyncio.create_task(self._logger_watch_loop())
 
             self.log_cleaner = LogCleaner(self.data_dir, config)
             await self.log_cleaner.start()
@@ -150,7 +309,7 @@ class LogVaultPlugin(Star):
                 self.log_cleaner,
                 self._legacy_data_dirs(),
                 plugin_catalog_provider=self._installed_plugin_catalog,
-                host_log_dirs=[self.data_dir.parent.parent / "logs"],
+                host_log_dirs=self._host_log_dirs(),
             )
             legacy_note = len(self.command_handler.additional_data_dirs)
             logger.info(
@@ -169,12 +328,27 @@ class LogVaultPlugin(Star):
                 await self._init_task
             except asyncio.CancelledError:
                 pass
+        if self._logger_watch_task and not self._logger_watch_task.done():
+            self._logger_watch_task.cancel()
+            try:
+                await self._logger_watch_task
+            except asyncio.CancelledError:
+                pass
         if self.log_cleaner:
             await self.log_cleaner.stop()
         if self.log_handler:
-            logger.removeHandler(self.log_handler)
+            for target in list(self._attached_loggers):
+                target.removeHandler(self.log_handler)
+            self._attached_loggers.clear()
             self.log_handler.close()
+            self.log_handler = None
         logger.info("LogVault 已停止")
+
+    @filter.on_plugin_loaded()
+    async def _on_plugin_loaded(self, metadata: Any = None):
+        """Attach immediately when AstrBot creates another plugin logger."""
+
+        self._attach_logging_handlers()
 
     @filter.command_group("logvault", alias={"logplus"})
     def logvault(self):

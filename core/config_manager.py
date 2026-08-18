@@ -23,6 +23,7 @@ class ConfigManager:
         "sensitive_keywords": "token,password,secret,api_key,apikey,access_key,accesskey",
         "include_legacy_data": True,
         "legacy_data_dirs": [],
+        "host_log_dirs": [],
     }
 
     def __init__(self, config: dict):
@@ -47,6 +48,16 @@ class ConfigManager:
         """Return explicitly configured read-only legacy data directories."""
 
         value = self.get("legacy_data_dirs", [])
+        if isinstance(value, str):
+            value = value.splitlines()
+        if not isinstance(value, list):
+            return []
+        return [str(item).strip() for item in value if str(item).strip()]
+
+    def get_host_log_dirs(self) -> list[str]:
+        """Return extra shared-log directories used by plugin filtering."""
+
+        value = self.get("host_log_dirs", [])
         if isinstance(value, str):
             value = value.splitlines()
         if not isinstance(value, list):
