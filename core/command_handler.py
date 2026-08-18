@@ -41,14 +41,18 @@ class CommandHandler:
         cleaner: LogCleaner,
         additional_data_dirs: Iterable[Path] | None = None,
         plugin_catalog_provider: PluginCatalogProvider | None = None,
+        host_log_dirs: Iterable[Path] | None = None,
     ):
         self.data_dir = Path(data_dir).resolve()
         self.cleaner = cleaner
         self.additional_data_dirs = self._dedupe_dirs(additional_data_dirs or [])
         self.plugin_catalog_provider = plugin_catalog_provider
+        self.host_log_dirs = self._dedupe_dirs(host_log_dirs or [], include_missing=True)
 
     @staticmethod
-    def _dedupe_dirs(paths: Iterable[Path]) -> list[Path]:
+    def _dedupe_dirs(
+        paths: Iterable[Path], include_missing: bool = False
+    ) -> list[Path]:
         result: list[Path] = []
         seen: set[str] = set()
         for value in paths:
@@ -57,7 +61,10 @@ class CommandHandler:
             except (OSError, RuntimeError, TypeError):
                 continue
             key = os.path.normcase(str(path))
-            if path.exists() and path.is_dir() and key not in seen:
+            if (
+                (include_missing or (path.exists() and path.is_dir()))
+                and key not in seen
+            ):
                 seen.add(key)
                 result.append(path)
         return result
@@ -81,6 +88,36 @@ class CommandHandler:
                 continue
             for plugin_dir in plugin_dirs:
                 yield label, root, plugin_dir
+
+    def _shared_log_files(self) -> Iterator[tuple[str, Path, Path]]:
+        """Yield shared LogVault and host logs for plugin-specific fallback."""
+
+        seen: set[str] = set()
+        for label, root in self._sources():
+            for category in ("all", "core"):
+                for path in self._iter_files(root, root / category):
+                    key = os.path.normcase(str(path.resolve()))
+                    if key not in seen:
+                        seen.add(key)
+                        yield label, root, path
+
+        for index, log_dir in enumerate(self.host_log_dirs, start=1):
+            if not log_dir.is_dir():
+                continue
+            try:
+                paths = sorted(
+                    (item for item in log_dir.rglob("*") if item.is_file()),
+                    key=lambda item: item.as_posix().casefold(),
+                )
+            except OSError:
+                continue
+            for path in paths:
+                if not _is_log_file(path):
+                    continue
+                key = os.path.normcase(str(path.resolve()))
+                if key not in seen:
+                    seen.add(key)
+                    yield f"host_{index}_{log_dir.name}", log_dir, path
 
     def _plugin_catalog(self) -> list[PluginCatalogEntry]:
         """Merge AstrBot's installed-plugin registry with existing log dirs."""
@@ -315,7 +352,9 @@ class CommandHandler:
             label = f"最近 {days} 天错误日志"
             filename = f"error_logs_{timestamp}.zip"
         else:
-            entries, plugin_name, error = self._plugin_entries(target, days)
+            entries, plugin_name, error, plugin_aliases = self._plugin_entries(
+                target, days
+            )
             if error:
                 return error, None
             label = f"插件 {plugin_name} 最近 {days} 天日志"
@@ -323,6 +362,25 @@ class CommandHandler:
 
         if not entries:
             if target_lower not in {"all", "errors"}:
+                shared_entries = self._recent_shared_plugin_entries(
+                    days, plugin_aliases
+                )
+                if shared_entries:
+                    zip_path = export_dir / filename
+                    count = await asyncio.to_thread(
+                        self._write_filtered_plugin_zip,
+                        zip_path,
+                        shared_entries,
+                        plugin_aliases,
+                        label,
+                    )
+                    if count:
+                        size_mb = round(zip_path.stat().st_size / 1024 / 1024, 2)
+                        message = (
+                            f"📦 插件 {plugin_name} 日志已从共享日志中筛选打包（最近 {days} 天）\n"
+                            f"├─ 文件数: {count}\n└─ 大小: {size_mb} MB"
+                        )
+                        return message, zip_path
                 message = (
                     f"❌ 已识别插件 '{plugin_name}'，但最近 {days} 天没有捕获到它的日志文件\n"
                     "LogVault 只能发送安装并启动后记录到的日志。"
@@ -356,7 +414,7 @@ class CommandHandler:
 
     def _plugin_entries(
         self, keyword: str, days: int
-    ) -> tuple[list[tuple[str, Path, Path]], str, str | None]:
+    ) -> tuple[list[tuple[str, Path, Path]], str, str | None, set[str]]:
         needle = keyword.casefold()
         catalog = self._plugin_catalog()
         matches = [
@@ -370,10 +428,10 @@ class CommandHandler:
                 "\n".join(f"  - {entry.name}" for entry in catalog)
                 or "  （暂无已识别插件）"
             )
-            return [], "", f"❌ 未找到匹配 '{keyword}' 的插件\n可用插件:\n{choices}"
+            return [], "", f"❌ 未找到匹配 '{keyword}' 的插件\n可用插件:\n{choices}", set()
         if len(matches) > 1:
             choices = "\n".join(f"  - {entry.name}" for entry in matches)
-            return [], "", f"❌ 找到多个匹配的插件，请更具体:\n{choices}"
+            return [], "", f"❌ 找到多个匹配的插件，请更具体:\n{choices}", set()
 
         matched = matches[0]
         plugin_name = matched.name
@@ -385,8 +443,104 @@ class CommandHandler:
                     if path.stat().st_mtime >= cutoff:
                         entries.append((label, root, path))
                 except OSError:
-                    continue
-        return entries, plugin_name, None
+                        continue
+        return entries, plugin_name, None, set(matched.aliases)
+
+    @staticmethod
+    def _line_matches_plugin(line: str, aliases: set[str]) -> bool:
+        line_lower = line.casefold()
+        return any(alias.casefold() in line_lower for alias in aliases if alias)
+
+    def _recent_shared_plugin_entries(
+        self, days: int, aliases: set[str]
+    ) -> list[tuple[str, Path, Path]]:
+        cutoff = self._cutoff(days)
+        entries: list[tuple[str, Path, Path]] = []
+        for label, root, path in self._shared_log_files():
+            try:
+                if path.stat().st_mtime >= cutoff:
+                    entries.append((label, root, path))
+            except OSError:
+                continue
+        return entries
+
+    @classmethod
+    def _filtered_log_text(cls, path: Path, aliases: set[str]) -> str:
+        opener = gzip.open if path.name.casefold().endswith(".gz") else open
+        blocks: list[str] = []
+        current: list[str] = []
+        matched = False
+
+        def flush() -> None:
+            if matched and current:
+                blocks.append("".join(current))
+
+        with opener(path, "rt", encoding="utf-8", errors="ignore") as stream:
+            for line in stream:
+                # AstrBot's backend file may format one record over three lines;
+                # a new timestamp starts the next record. LogVault's formatter
+                # emits one line per record and works with the same boundary.
+                if (
+                    current
+                    and len(line) >= 12
+                    and line[0] == "["
+                    and line[5] == "-"
+                    and line[8] == "-"
+                ):
+                    flush()
+                    current = []
+                    matched = False
+                current.append(line)
+                if cls._line_matches_plugin(line, aliases):
+                    matched = True
+            flush()
+        return "".join(blocks)
+
+    @classmethod
+    def _write_filtered_plugin_zip(
+        cls,
+        zip_path: Path,
+        entries: list[tuple[str, Path, Path]],
+        aliases: set[str],
+        description: str,
+    ) -> int:
+        count = 0
+        seen: set[str] = set()
+        try:
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr(
+                    "ABOUT.txt",
+                    "LogVault\n"
+                    f"{description}\n"
+                    "来源：共享日志中按插件标识筛选的记录\n"
+                    f"Generated: {datetime.now().isoformat(timespec='seconds')}\n",
+                )
+                for label, root, path in entries:
+                    try:
+                        key = os.path.normcase(str(path.resolve()))
+                        if key in seen:
+                            continue
+                        content = cls._filtered_log_text(path, aliases)
+                        if not content:
+                            continue
+                        relative = path.relative_to(root).as_posix()
+                        archive.writestr(f"filtered/{label}/{relative}", content)
+                        seen.add(key)
+                        count += 1
+                    except (OSError, EOFError, UnicodeError, ValueError):
+                        continue
+        except Exception:
+            try:
+                zip_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+        if count == 0:
+            try:
+                zip_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        return count
 
     @staticmethod
     def _archive_name(prefix: str) -> str:

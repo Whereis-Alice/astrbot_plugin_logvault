@@ -1,5 +1,9 @@
 import os
+import re
 from pathlib import Path
+
+
+_PLUGIN_ID_RE = re.compile(r"(?<![A-Za-z0-9_])astrbot_plugin_[A-Za-z0-9_]+", re.IGNORECASE)
 
 
 def _path_parts(pathname: str | os.PathLike[str]) -> tuple[str, ...]:
@@ -71,6 +75,69 @@ class LogRouter:
             return parts[idx + 1]
 
         return None
+
+    @staticmethod
+    def _extract_explicit_plugin_name(value: object, allow_generic: bool = False) -> str | None:
+        """Extract a plugin ID from AstrBot's enriched LogRecord fields."""
+
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+
+        match = _PLUGIN_ID_RE.search(text)
+        if match:
+            return match.group(0)
+        if not allow_generic:
+            return None
+
+        candidate = text.strip("[](){} ").split(":", 1)[0].split(".", 1)[0]
+        if (
+            not candidate
+            or candidate.casefold() in {"core", "plug", "plugin"}
+            or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", candidate)
+        ):
+            return None
+        return candidate
+
+    @staticmethod
+    def extract_plugin_name_from_record(record: object) -> str | None:
+        """Resolve plugin identity from a LogRecord, including AstrBot fields.
+
+        Recent AstrBot releases enrich records before forwarding them to the
+        console.  Depending on the logging bridge, ``pathname`` can point to
+        the bridge module even though ``plugin_tag`` or ``source_file`` still
+        contains the real plugin ID.  Prefer the normal path route, then use
+        those enriched fields and the conventional ``[astrbot_plugin_*]``
+        message prefix as compatibility fallbacks.
+        """
+
+        pathname = getattr(record, "pathname", None)
+        plugin_name = LogRouter.extract_plugin_name(pathname or "")
+        if plugin_name:
+            return plugin_name
+
+        for attribute in ("plugin_name", "plugin_id", "star_name"):
+            plugin_name = LogRouter._extract_explicit_plugin_name(
+                getattr(record, attribute, None), allow_generic=True
+            )
+            if plugin_name:
+                return plugin_name
+
+        for attribute in ("plugin_tag", "source_file"):
+            plugin_name = LogRouter._extract_explicit_plugin_name(
+                getattr(record, attribute, None)
+            )
+            if plugin_name:
+                return plugin_name
+
+        try:
+            message = record.getMessage()  # type: ignore[attr-defined]
+        except (AttributeError, TypeError, ValueError):
+            message = getattr(record, "msg", "")
+        match = re.match(r"\s*\[(astrbot_plugin_[A-Za-z0-9_]+)\]", str(message), re.IGNORECASE)
+        return match.group(1) if match else None
 
     @staticmethod
     def get_source_type(pathname: str) -> str:

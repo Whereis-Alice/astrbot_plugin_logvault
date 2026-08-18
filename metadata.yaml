@@ -3,5 +3,5 @@ display_name: LogVault
 desc: AstrBot 日志持久化与安全导出插件：按 Core/插件/错误分类，支持轮换、压缩、清理、搜索和按天数发送。
 author: Whereis-Alice
 repo: "https://github.com/Whereis-Alice/astrbot_plugin_logvault"
-version: 2.0.1
+version: 2.0.2
 astrbot_version: ">=4.16,<5"

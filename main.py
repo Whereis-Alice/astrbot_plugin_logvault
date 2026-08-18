@@ -19,7 +19,7 @@ from .core.sensitive_filter import SensitiveFilter
 
 
 PLUGIN_ID = "astrbot_plugin_logvault"
-PLUGIN_VERSION = "2.0.1"
+PLUGIN_VERSION = "2.0.2"
 LEGACY_PLUGIN_ID = "astrbot_plugin_logplus"
 LOG_LEVELS = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40, "CRITICAL": 50}
 
@@ -150,6 +150,7 @@ class LogVaultPlugin(Star):
                 self.log_cleaner,
                 self._legacy_data_dirs(),
                 plugin_catalog_provider=self._installed_plugin_catalog,
+                host_log_dirs=[self.data_dir.parent.parent / "logs"],
             )
             legacy_note = len(self.command_handler.additional_data_dirs)
             logger.info(

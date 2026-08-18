@@ -47,6 +47,8 @@ LogVault 为 AstrBot 增加可靠的日志文件留存、分类、轮换、压�
 
 可用插件名会从 AstrBot 当前的插件注册表读取，不要求该插件已经产生专属日志目录。如果插件已识别但最近 N 天没有日志，命令会明确说明“尚未捕获到日志”；LogVault 不会伪造或回溯安装之前的记录。
 
+如果日志已经被 AstrBot 写入默认的 `data/logs/astrbot.log`，但还没有被分流到专属目录，`send plugin` 会按插件 ID 从该后台日志中筛选相关记录，不会打包整份 Core 日志。
+
 ## 日志位置
 
 LogVault 的新数据目录由 AstrBot 的 `StarTools.get_data_dir()` 管理，通常是：

@@ -90,6 +90,86 @@ class LogVaultBehaviourTests(unittest.TestCase):
             self.assertIsNotNone(archive_path)
             self.assertIn("最近 3 天", message)
 
+    def test_astrbot_enriched_plugin_fields_are_routed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            config = {
+                "enable_all_log": False,
+                "enable_core_log": False,
+                "enable_error_log": False,
+                "enable_plugin_separation": True,
+                "max_file_size_mb": 10,
+                "backup_count": 2,
+                "rotation_strategy": "size",
+                "enable_compression": False,
+            }
+            handler = LogVaultHandler(root, config)
+            try:
+                record = logging.LogRecord(
+                    "astrbot",
+                    logging.INFO,
+                    "/srv/astrbot/core/log.py",
+                    1315,
+                    "[astrbot_plugin_dynamic_card_plus] reminder reached tool group=%s",
+                    (932436510,),
+                    None,
+                )
+                record.plugin_tag = "[astrbot_plugin_dynamic_card_plus]"
+                record.source_file = "astrbot_plugin_dynamic_card_plus.main"
+                handler.emit(record)
+                output = (
+                    root
+                    / "plugins"
+                    / "astrbot_plugin_dynamic_card_plus"
+                    / "plugin.log"
+                )
+                self.assertTrue(output.exists())
+                self.assertIn("reminder reached tool", output.read_text(encoding="utf-8"))
+            finally:
+                handler.close()
+
+    def test_send_plugin_filters_astrbot_backend_log_fallback(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            host_logs = root / "logs"
+            host_logs.mkdir(parents=True)
+            backend_log = host_logs / "astrbot.log"
+            backend_log.write_text(
+                "[2026-08-18 15:12:40.321] [astrbot_plugin_dynamic_card_plus]\n"
+                "[INFO]\n"
+                "[astrbot_plugin_dynamic_card_plus.main:1315]: [astrbot_plugin_dynamic_card_plus] reminder reached tool\n"
+                "[2026-08-18 15:12:41.000] [Core]\n"
+                "[INFO]\n"
+                "[runners.tool_loop_agent_runner:1349]: unrelated core record\n",
+                encoding="utf-8",
+            )
+
+            command = CommandHandler(
+                root / "plugin_data" / "astrbot_plugin_logvault",
+                LogCleaner(root / "plugin_data" / "astrbot_plugin_logvault", {}),
+                plugin_catalog_provider=lambda: {
+                    "astrbot_plugin_dynamic_card_plus": {
+                        "astrbot_plugin_dynamic_card_plus"
+                    }
+                },
+                host_log_dirs=[host_logs],
+            )
+            message, archive_path = asyncio.run(
+                command.handle_send("dynamic_card_plus", 1)
+            )
+
+            self.assertIsNotNone(archive_path)
+            self.assertIn("共享日志中筛选", message)
+            assert archive_path is not None
+            with zipfile.ZipFile(archive_path) as result:
+                contents = "\n".join(
+                    result.read(name).decode("utf-8")
+                    for name in result.namelist()
+                    if name != "ABOUT.txt"
+                )
+            self.assertIn("reminder reached tool", contents)
+            self.assertNotIn("unrelated core record", contents)
+
     def test_send_plugin_filters_by_days(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
