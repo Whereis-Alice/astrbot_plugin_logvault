@@ -6,7 +6,8 @@ import asyncio
 import gzip
 import os
 import zipfile
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -19,6 +20,18 @@ def _is_log_file(path: Path) -> bool:
     return name.endswith(".log") or ".log." in name
 
 
+@dataclass
+class PluginCatalogEntry:
+    """One installed plugin and any log directories that belong to it."""
+
+    name: str
+    aliases: set[str] = field(default_factory=set)
+    log_dirs: list[tuple[str, Path, Path]] = field(default_factory=list)
+
+
+PluginCatalogProvider = Callable[[], Mapping[str, Iterable[str]]]
+
+
 class CommandHandler:
     """Build status/search/export/send responses without blocking the event loop."""
 
@@ -27,10 +40,12 @@ class CommandHandler:
         data_dir: Path,
         cleaner: LogCleaner,
         additional_data_dirs: Iterable[Path] | None = None,
+        plugin_catalog_provider: PluginCatalogProvider | None = None,
     ):
         self.data_dir = Path(data_dir).resolve()
         self.cleaner = cleaner
         self.additional_data_dirs = self._dedupe_dirs(additional_data_dirs or [])
+        self.plugin_catalog_provider = plugin_catalog_provider
 
     @staticmethod
     def _dedupe_dirs(paths: Iterable[Path]) -> list[Path]:
@@ -51,6 +66,65 @@ class CommandHandler:
         yield "current", self.data_dir
         for index, path in enumerate(self.additional_data_dirs, start=1):
             yield f"legacy_{index}_{path.name}", path
+
+    def _plugin_log_dirs(self) -> Iterator[tuple[str, Path, Path]]:
+        for label, root in self._sources():
+            plugins_dir = root / "plugins"
+            if not plugins_dir.is_dir():
+                continue
+            try:
+                plugin_dirs = sorted(
+                    (item for item in plugins_dir.iterdir() if item.is_dir()),
+                    key=lambda item: item.name.casefold(),
+                )
+            except OSError:
+                continue
+            for plugin_dir in plugin_dirs:
+                yield label, root, plugin_dir
+
+    def _plugin_catalog(self) -> list[PluginCatalogEntry]:
+        """Merge AstrBot's installed-plugin registry with existing log dirs."""
+
+        entries: dict[str, PluginCatalogEntry] = {}
+        if self.plugin_catalog_provider:
+            try:
+                registered = self.plugin_catalog_provider()
+            except (AttributeError, RuntimeError, TypeError):
+                registered = {}
+            if isinstance(registered, Mapping):
+                for raw_name, raw_aliases in registered.items():
+                    name = str(raw_name or "").strip()
+                    if not name:
+                        continue
+                    key = name.casefold()
+                    entry = entries.setdefault(key, PluginCatalogEntry(name=name))
+                    entry.aliases.add(name)
+                    aliases = (
+                        [raw_aliases]
+                        if isinstance(raw_aliases, str)
+                        else raw_aliases or []
+                    )
+                    entry.aliases.update(
+                        str(alias).strip()
+                        for alias in aliases
+                        if str(alias or "").strip()
+                    )
+
+        alias_owners: dict[str, str] = {}
+        for key, entry in entries.items():
+            for alias in entry.aliases:
+                alias_owners.setdefault(alias.casefold(), key)
+
+        for label, root, plugin_dir in self._plugin_log_dirs():
+            directory_name = plugin_dir.name
+            key = alias_owners.get(directory_name.casefold(), directory_name.casefold())
+            entry = entries.setdefault(
+                key, PluginCatalogEntry(name=directory_name, aliases={directory_name})
+            )
+            entry.aliases.add(directory_name)
+            entry.log_dirs.append((label, root, plugin_dir))
+
+        return sorted(entries.values(), key=lambda item: item.name.casefold())
 
     @staticmethod
     def _relative_arcname(source_label: str, root: Path, path: Path) -> str:
@@ -248,6 +322,12 @@ class CommandHandler:
             filename = f"plugin_{plugin_name}_{timestamp}.zip"
 
         if not entries:
+            if target_lower not in {"all", "errors"}:
+                message = (
+                    f"❌ 已识别插件 '{plugin_name}'，但最近 {days} 天没有捕获到它的日志文件\n"
+                    "LogVault 只能发送安装并启动后记录到的日志。"
+                )
+                return message, None
             return f"❌ 最近 {days} 天没有找到可发送的日志文件", None
 
         zip_path = export_dir / filename
@@ -278,47 +358,31 @@ class CommandHandler:
         self, keyword: str, days: int
     ) -> tuple[list[tuple[str, Path, Path]], str, str | None]:
         needle = keyword.casefold()
-        candidates: list[tuple[str, str, Path, Path]] = []
-        for label, root in self._sources():
-            plugins_dir = root / "plugins"
-            if not plugins_dir.is_dir():
-                continue
-            try:
-                plugin_dirs = [item for item in plugins_dir.iterdir() if item.is_dir()]
-            except OSError:
-                continue
-            for plugin_dir in plugin_dirs:
-                if needle in plugin_dir.name.casefold():
-                    candidates.append((plugin_dir.name.casefold(), plugin_dir.name, root, plugin_dir))
+        catalog = self._plugin_catalog()
+        matches = [
+            entry
+            for entry in catalog
+            if any(needle in alias.casefold() for alias in entry.aliases)
+        ]
 
-        unique = {item[0]: item[1] for item in candidates}
-        if not unique:
-            available = sorted(
-                {
-                    item.name
-                    for _, root in self._sources()
-                    for item in (root / "plugins").glob("*")
-                    if item.is_dir()
-                }
+        if not matches:
+            choices = (
+                "\n".join(f"  - {entry.name}" for entry in catalog)
+                or "  （暂无已识别插件）"
             )
-            choices = "\n".join(f"  - {item}" for item in available) or "  （暂无插件日志目录）"
             return [], "", f"❌ 未找到匹配 '{keyword}' 的插件\n可用插件:\n{choices}"
-        if len(unique) > 1:
-            choices = "\n".join(f"  - {name}" for name in sorted(unique.values()))
+        if len(matches) > 1:
+            choices = "\n".join(f"  - {entry.name}" for entry in matches)
             return [], "", f"❌ 找到多个匹配的插件，请更具体:\n{choices}"
 
-        plugin_name = next(iter(unique.values()))
+        matched = matches[0]
+        plugin_name = matched.name
         cutoff = self._cutoff(days)
         entries: list[tuple[str, Path, Path]] = []
-        for _, name, root, plugin_dir in candidates:
-            if name.casefold() != plugin_name.casefold():
-                continue
+        for label, root, plugin_dir in matched.log_dirs:
             for path in self._iter_files(root, plugin_dir):
                 try:
                     if path.stat().st_mtime >= cutoff:
-                        label = "current" if root == self.data_dir else next(
-                            label for label, candidate in self._sources() if candidate == root
-                        )
                         entries.append((label, root, path))
                 except OSError:
                     continue

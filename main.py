@@ -19,7 +19,7 @@ from .core.sensitive_filter import SensitiveFilter
 
 
 PLUGIN_ID = "astrbot_plugin_logvault"
-PLUGIN_VERSION = "2.0.0"
+PLUGIN_VERSION = "2.0.1"
 LEGACY_PLUGIN_ID = "astrbot_plugin_logplus"
 LOG_LEVELS = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40, "CRITICAL": 50}
 
@@ -75,6 +75,59 @@ class LogVaultPlugin(Star):
                 result.append(resolved)
         return result
 
+    def _installed_plugin_catalog(self) -> dict[str, set[str]]:
+        """Return live AstrBot plugin IDs and their searchable aliases."""
+
+        catalog: dict[str, set[str]] = {}
+        get_all_stars = getattr(self.context, "get_all_stars", None)
+        stars = []
+        if callable(get_all_stars):
+            try:
+                stars = get_all_stars()
+            except (AttributeError, RuntimeError, TypeError):
+                stars = []
+
+        for star in stars:
+            name = str(getattr(star, "name", "") or "").strip()
+            root_name = str(getattr(star, "root_dir_name", "") or "").strip()
+            canonical_name = name or root_name
+            if not canonical_name:
+                continue
+            aliases = {canonical_name}
+            for attribute in ("name", "root_dir_name", "display_name"):
+                value = str(getattr(star, attribute, "") or "").strip()
+                if value:
+                    aliases.add(value)
+            catalog.setdefault(canonical_name, set()).update(aliases)
+
+        # Filesystem fallback for older AstrBot 4.x releases or disabled
+        # plugins that are present under data/plugins but absent from the
+        # live registry. StarTools stores our data at data/plugin_data/ID.
+        plugins_root = self.data_dir.parent.parent / "plugins"
+        try:
+            plugin_dirs = [
+                item
+                for item in plugins_root.iterdir()
+                if item.is_dir() and not item.name.startswith(".")
+            ]
+        except OSError:
+            plugin_dirs = []
+        for plugin_dir in plugin_dirs:
+            root_name = plugin_dir.name.strip()
+            if not root_name or root_name == "__pycache__":
+                continue
+            owner = next(
+                (
+                    name
+                    for name, aliases in catalog.items()
+                    if root_name.casefold()
+                    in {alias.casefold() for alias in aliases}
+                ),
+                root_name,
+            )
+            catalog.setdefault(owner, set()).add(root_name)
+        return catalog
+
     async def _initialize_plugin(self):
         try:
             config = self.config_manager.as_dict()
@@ -93,7 +146,10 @@ class LogVaultPlugin(Star):
             self.log_cleaner = LogCleaner(self.data_dir, config)
             await self.log_cleaner.start()
             self.command_handler = CommandHandler(
-                self.data_dir, self.log_cleaner, self._legacy_data_dirs()
+                self.data_dir,
+                self.log_cleaner,
+                self._legacy_data_dirs(),
+                plugin_catalog_provider=self._installed_plugin_catalog,
             )
             legacy_note = len(self.command_handler.additional_data_dirs)
             logger.info(

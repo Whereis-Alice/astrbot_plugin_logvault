@@ -38,7 +38,7 @@ class LogVaultBehaviourTests(unittest.TestCase):
             self.assertTrue(active.exists())
             self.assertTrue((root / "plugins" / "demo" / "plugin.log.1.gz").exists())
 
-    def test_plugin_records_write_on_linux_style_path(self):
+    def test_dynamic_card_log_after_start_can_be_sent(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             config = {
@@ -56,18 +56,39 @@ class LogVaultBehaviourTests(unittest.TestCase):
                 record = logging.LogRecord(
                     "astrbot",
                     logging.INFO,
-                    "/srv/astrbot/data/plugins/demo/main.py",
+                    "/srv/astrbot/data/plugins/astrbot_plugin_dynamic_card_plus/main.py",
                     10,
                     "recent message",
                     (),
                     None,
                 )
                 handler.emit(record)
-                output = root / "plugins" / "demo" / "plugin.log"
+                output = (
+                    root
+                    / "plugins"
+                    / "astrbot_plugin_dynamic_card_plus"
+                    / "plugin.log"
+                )
                 self.assertTrue(output.exists())
                 self.assertIn("recent message", output.read_text(encoding="utf-8"))
             finally:
                 handler.close()
+
+            command = CommandHandler(
+                root,
+                LogCleaner(root, {}),
+                plugin_catalog_provider=lambda: {
+                    "astrbot_plugin_dynamic_card_plus": {
+                        "astrbot_plugin_dynamic_card_plus",
+                        "Dynamic Card Plus",
+                    }
+                },
+            )
+            message, archive_path = asyncio.run(
+                command.handle_send("dynamic_card_plus", 3)
+            )
+            self.assertIsNotNone(archive_path)
+            self.assertIn("最近 3 天", message)
 
     def test_send_plugin_filters_by_days(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -92,6 +113,57 @@ class LogVaultBehaviourTests(unittest.TestCase):
                 names = result.namelist()
             self.assertIn("plugins/astrbot_plugin_demo/plugin.log", names)
             self.assertNotIn("plugins/astrbot_plugin_demo/plugin.log.1.gz", names)
+
+    def test_installed_plugin_is_recognized_before_its_first_log(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            existing = root / "plugins" / "astrbot_plugin_logvault"
+            existing.mkdir(parents=True)
+            (existing / "plugin.log").write_text("logvault", encoding="utf-8")
+
+            command = CommandHandler(
+                root,
+                LogCleaner(root, {}),
+                plugin_catalog_provider=lambda: {
+                    "astrbot_plugin_dynamic_card_plus": {
+                        "astrbot_plugin_dynamic_card_plus",
+                        "Dynamic Card Plus",
+                    },
+                    "astrbot_plugin_logvault": {"LogVault"},
+                },
+            )
+            message, archive_path = asyncio.run(
+                command.handle_send("dynamic_card_plus", 3)
+            )
+
+            self.assertIsNone(archive_path)
+            self.assertIn("已识别插件 'astrbot_plugin_dynamic_card_plus'", message)
+            self.assertIn("没有捕获到", message)
+            self.assertNotIn("未找到匹配", message)
+
+    def test_registered_plugin_alias_uses_existing_log_directory(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            plugin_dir = root / "plugins" / "astrbot_plugin_dynamic_card_plus"
+            plugin_dir.mkdir(parents=True)
+            (plugin_dir / "plugin.log").write_text("recent", encoding="utf-8")
+
+            command = CommandHandler(
+                root,
+                LogCleaner(root, {}),
+                plugin_catalog_provider=lambda: {
+                    "astrbot_plugin_dynamic_card_plus": {
+                        "astrbot_plugin_dynamic_card_plus",
+                        "Dynamic Card Plus",
+                    }
+                },
+            )
+            message, archive_path = asyncio.run(
+                command.handle_send("Dynamic Card Plus", 3)
+            )
+
+            self.assertIsNotNone(archive_path)
+            self.assertIn("插件 astrbot_plugin_dynamic_card_plus 日志", message)
 
     def test_parameterized_sensitive_log_keeps_numeric_formatting(self):
         record = logging.LogRecord(
