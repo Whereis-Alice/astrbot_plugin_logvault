@@ -98,7 +98,7 @@ data/plugin_data/astrbot_plugin_logvault/
 | `legacy_data_dirs` | `[]` | 额外历史目录，每行一个路径 |
 | `host_log_dirs` | `[]` | AstrBot 共享日志的额外目录；默认自动读取 `data/logs` 和核心配置中的日志路径 |
 
-脱敏只影响 LogVault 写入的副本，不会修改 AstrBot 的控制台日志或其他 Handler。发送日志前仍应确认内容不包含不应公开的数据。
+脱敏只影响 LogVault 写入的副本和共享日志回退筛选生成的副本，不会修改 AstrBot 的控制台日志或其他 Handler。发送日志前仍应确认内容不包含不应公开的数据。
 
 ## 从旧版升级
 

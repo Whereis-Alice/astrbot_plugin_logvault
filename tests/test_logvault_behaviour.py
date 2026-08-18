@@ -217,6 +217,41 @@ class LogVaultBehaviourTests(unittest.TestCase):
             self.assertIn("reminder reached tool", contents)
             self.assertNotIn("unrelated core record", contents)
 
+    def test_shared_log_fallback_applies_sensitive_filter(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            host_logs = root / "logs"
+            host_logs.mkdir(parents=True)
+            (host_logs / "astrbot.log").write_text(
+                "[2026-08-18 15:12:40.321] [astrbot_plugin_demo]\n"
+                "[INFO]\n"
+                "[astrbot_plugin_demo.main:1]: [astrbot_plugin_demo] token=real-secret\n",
+                encoding="utf-8",
+            )
+            data_dir = root / "plugin_data" / "astrbot_plugin_logvault"
+            command = CommandHandler(
+                data_dir,
+                LogCleaner(data_dir, {}),
+                plugin_catalog_provider=lambda: {
+                    "astrbot_plugin_demo": {"astrbot_plugin_demo"}
+                },
+                host_log_dirs=[host_logs],
+                sensitive_filter=SensitiveFilter(["token"]),
+            )
+
+            _, archive_path = asyncio.run(command.handle_send("demo", 1))
+
+            self.assertIsNotNone(archive_path)
+            assert archive_path is not None
+            with zipfile.ZipFile(archive_path) as result:
+                contents = "\n".join(
+                    result.read(name).decode("utf-8")
+                    for name in result.namelist()
+                    if name != "ABOUT.txt"
+                )
+            self.assertIn("token=***", contents)
+            self.assertNotIn("real-secret", contents)
+
     def test_send_plugin_filters_by_days(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

@@ -310,6 +310,7 @@ class LogVaultPlugin(Star):
                 self._legacy_data_dirs(),
                 plugin_catalog_provider=self._installed_plugin_catalog,
                 host_log_dirs=self._host_log_dirs(),
+                sensitive_filter=self.sensitive_filter,
             )
             legacy_note = len(self.command_handler.additional_data_dirs)
             logger.info(

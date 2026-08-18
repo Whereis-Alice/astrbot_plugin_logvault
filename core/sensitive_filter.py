@@ -81,6 +81,13 @@ class SensitiveFilter:
             result = pattern.sub(rf"\1={self.MASK}", result)
         return result
 
+    def mask_text(self, text: str) -> str:
+        """Mask a text block such as a shared AstrBot log fallback."""
+
+        if not self.enabled:
+            return text
+        return self._mask_sensitive(str(text))
+
     def update_keywords(self, keywords: list[str]):
         """更新敏感词列表"""
         self.keywords = keywords

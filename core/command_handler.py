@@ -46,12 +46,14 @@ class CommandHandler:
         additional_data_dirs: Iterable[Path] | None = None,
         plugin_catalog_provider: PluginCatalogProvider | None = None,
         host_log_dirs: Iterable[Path] | None = None,
+        sensitive_filter=None,
     ):
         self.data_dir = Path(data_dir).resolve()
         self.cleaner = cleaner
         self.additional_data_dirs = self._dedupe_dirs(additional_data_dirs or [])
         self.plugin_catalog_provider = plugin_catalog_provider
         self.host_log_dirs = self._dedupe_dirs(host_log_dirs or [], include_missing=True)
+        self.sensitive_filter = sensitive_filter
 
     @staticmethod
     def _dedupe_dirs(
@@ -377,6 +379,7 @@ class CommandHandler:
                         shared_entries,
                         plugin_aliases,
                         label,
+                        self.sensitive_filter,
                     )
                     if count:
                         size_mb = round(zip_path.stat().st_size / 1024 / 1024, 2)
@@ -469,7 +472,7 @@ class CommandHandler:
         return entries
 
     @classmethod
-    def _filtered_log_text(cls, path: Path, aliases: set[str]) -> str:
+    def _filtered_log_text(cls, path: Path, aliases: set[str], sensitive_filter=None) -> str:
         opener = gzip.open if path.name.casefold().endswith(".gz") else open
         blocks: list[str] = []
         current: list[str] = []
@@ -492,7 +495,15 @@ class CommandHandler:
                 if cls._line_matches_plugin(line, aliases):
                     matched = True
             flush()
-        return "".join(blocks)
+        content = "".join(blocks)
+        if sensitive_filter and content:
+            mask_text = getattr(sensitive_filter, "mask_text", None)
+            if callable(mask_text):
+                try:
+                    content = mask_text(content)
+                except (AttributeError, TypeError, ValueError):
+                    pass
+        return content
 
     @classmethod
     def _write_filtered_plugin_zip(
@@ -501,6 +512,7 @@ class CommandHandler:
         entries: list[tuple[str, Path, Path]],
         aliases: set[str],
         description: str,
+        sensitive_filter=None,
     ) -> int:
         count = 0
         seen: set[str] = set()
@@ -518,7 +530,7 @@ class CommandHandler:
                         key = os.path.normcase(str(path.resolve()))
                         if key in seen:
                             continue
-                        content = cls._filtered_log_text(path, aliases)
+                        content = cls._filtered_log_text(path, aliases, sensitive_filter)
                         if not content:
                             continue
                         relative = path.relative_to(root).as_posix()
