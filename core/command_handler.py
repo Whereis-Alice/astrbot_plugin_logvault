@@ -7,6 +7,7 @@ import gzip
 import os
 import re
 import zipfile
+from collections import deque
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -16,6 +17,47 @@ from .log_cleaner import LogCleaner
 
 
 _LOG_RECORD_START_RE = re.compile(r"^\s*\[\d{4}-\d{2}-\d{2}[ T]")
+_RECORD_TIMESTAMP_RE = re.compile(
+    r"^\s*\[(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:[.,](\d{1,6}))?"
+)
+_LEVEL_TOKEN_RE = re.compile(r"\[([A-Za-z]{1,8})\s*\]")
+_SHORT_LEVEL_ALIASES = {
+    "T": "TRACE",
+    "D": "DEBUG",
+    "I": "INFO",
+    "S": "SUCCESS",
+    "W": "WARNING",
+    "E": "ERROR",
+    "C": "CRITICAL",
+}
+
+
+def _parse_record_time(line: str) -> float | None:
+    """Return the POSIX timestamp of a log line, or None when it has none.
+
+    Both LogVault and AstrBot start every record with a bracketed local
+    timestamp.  Reading it is what allows "send/export <days>" to filter by
+    record age instead of file mtime: an active log file such as all.log is
+    appended to constantly, so its mtime is always "now" and mtime filtering
+    silently exported the whole history.
+    """
+
+    match = _RECORD_TIMESTAMP_RE.match(line)
+    if not match:
+        return None
+    try:
+        microseconds = int((match.group(7) or "0").ljust(6, "0")[:6])
+        return datetime(
+            int(match.group(1)),
+            int(match.group(2)),
+            int(match.group(3)),
+            int(match.group(4)),
+            int(match.group(5)),
+            int(match.group(6)),
+            microseconds,
+        ).timestamp()
+    except (OSError, OverflowError, ValueError):
+        return None
 
 
 def _is_log_file(path: Path) -> bool:
@@ -39,6 +81,26 @@ PluginCatalogProvider = Callable[[], Mapping[str, Iterable[str]]]
 class CommandHandler:
     """Build status/search/export/send responses without blocking the event loop."""
 
+    #: Separator used by the WebUI file identifiers, "<source>::<relative path>".
+    FILE_ID_SEPARATOR = "::"
+    #: Pseudo category that means "every file of this source".
+    ALL_CATEGORY = "__all__"
+    #: Lines inspected when looking for the first timestamp of a file.
+    MAX_HEAD_SCAN_LINES = 200
+    #: Hard ceiling for a single WebUI read so a huge file cannot stall a request.
+    MAX_SCAN_LINES = 200_000
+    #: Severity ranking shared by LogVault and AstrBot level names.
+    LEVEL_ORDER = {
+        "TRACE": 5,
+        "DEBUG": 10,
+        "INFO": 20,
+        "SUCCESS": 25,
+        "WARN": 30,
+        "WARNING": 30,
+        "ERROR": 40,
+        "CRITICAL": 50,
+    }
+
     def __init__(
         self,
         data_dir: Path,
@@ -47,6 +109,7 @@ class CommandHandler:
         plugin_catalog_provider: PluginCatalogProvider | None = None,
         host_log_dirs: Iterable[Path] | None = None,
         sensitive_filter=None,
+        slice_by_record_time: bool = True,
     ):
         self.data_dir = Path(data_dir).resolve()
         self.cleaner = cleaner
@@ -54,6 +117,7 @@ class CommandHandler:
         self.plugin_catalog_provider = plugin_catalog_provider
         self.host_log_dirs = self._dedupe_dirs(host_log_dirs or [], include_missing=True)
         self.sensitive_filter = sensitive_filter
+        self.slice_by_record_time = bool(slice_by_record_time)
 
     @staticmethod
     def _dedupe_dirs(
@@ -303,7 +367,7 @@ class CommandHandler:
             f"└─ 释放空间: {freed_mb} MB"
         )
 
-    async def handle_export(self, days: int = 7) -> str:
+    async def handle_export(self, days: int | str | None = 7) -> str:
         try:
             days = self._valid_days(days)
         except ValueError as exc:
@@ -315,7 +379,14 @@ class CommandHandler:
         entries = self._recent_entries(days)
         if not entries:
             return f"❌ 最近 {days} 天没有找到日志文件"
-        count = await asyncio.to_thread(self._write_zip, zip_path, entries, f"最近 {days} 天日志")
+        count = await asyncio.to_thread(
+            self._write_zip,
+            zip_path,
+            entries,
+            f"最近 {days} 天日志",
+            self._cutoff(days),
+            self.slice_by_record_time,
+        )
         size_mb = round(zip_path.stat().st_size / 1024 / 1024, 2)
         return f"📦 导出完成\n├─ 文件: {zip_path}\n├─ 包含: {count} 个日志文件\n└─ 大小: {size_mb} MB"
 
@@ -334,7 +405,7 @@ class CommandHandler:
         )
 
     async def handle_send(
-        self, target: str = "", days: int = 7
+        self, target: str = "", days: int | str | None = 7
     ) -> tuple[str, Path | None]:
         target = str(target or "").strip()
         if not target:
@@ -380,6 +451,7 @@ class CommandHandler:
                         plugin_aliases,
                         label,
                         self.sensitive_filter,
+                        self._cutoff(days) if self.slice_by_record_time else None,
                     )
                     if count:
                         size_mb = round(zip_path.stat().st_size / 1024 / 1024, 2)
@@ -396,7 +468,14 @@ class CommandHandler:
             return f"❌ 最近 {days} 天没有找到可发送的日志文件", None
 
         zip_path = export_dir / filename
-        count = await asyncio.to_thread(self._write_zip, zip_path, entries, label)
+        count = await asyncio.to_thread(
+            self._write_zip,
+            zip_path,
+            entries,
+            label,
+            self._cutoff(days),
+            self.slice_by_record_time,
+        )
         size_mb = round(zip_path.stat().st_size / 1024 / 1024, 2)
         if target_lower == "all":
             title = "全部日志"
@@ -450,7 +529,7 @@ class CommandHandler:
                     if path.stat().st_mtime >= cutoff:
                         entries.append((label, root, path))
                 except OSError:
-                        continue
+                    continue
         return entries, plugin_name, None, set(matched.aliases)
 
     @staticmethod
@@ -472,17 +551,23 @@ class CommandHandler:
         return entries
 
     @classmethod
-    def _filtered_log_text(cls, path: Path, aliases: set[str], sensitive_filter=None) -> str:
-        opener = gzip.open if path.name.casefold().endswith(".gz") else open
+    def _filtered_log_text(
+        cls,
+        path: Path,
+        aliases: set[str],
+        sensitive_filter=None,
+        cutoff: float | None = None,
+    ) -> str:
         blocks: list[str] = []
         current: list[str] = []
         matched = False
+        recent = True
 
         def flush() -> None:
-            if matched and current:
+            if matched and recent and current:
                 blocks.append("".join(current))
 
-        with opener(path, "rt", encoding="utf-8", errors="ignore") as stream:
+        with cls._open_text(path) as stream:
             for line in stream:
                 # AstrBot's backend file may format one record over three lines;
                 # a new timestamp starts the next record. LogVault's formatter
@@ -491,6 +576,12 @@ class CommandHandler:
                     flush()
                     current = []
                     matched = False
+                    recent = True
+                if not current and cutoff is not None:
+                    # Keep records without a parsable timestamp: dropping them
+                    # would hide logs written in an unexpected format.
+                    stamp = _parse_record_time(line)
+                    recent = stamp is None or stamp >= cutoff
                 current.append(line)
                 if cls._line_matches_plugin(line, aliases):
                     matched = True
@@ -513,16 +604,23 @@ class CommandHandler:
         aliases: set[str],
         description: str,
         sensitive_filter=None,
+        cutoff: float | None = None,
     ) -> int:
         count = 0
         seen: set[str] = set()
         try:
             with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
+                started = (
+                    datetime.fromtimestamp(cutoff).strftime("%Y-%m-%d %H:%M:%S")
+                    if cutoff is not None
+                    else "不限"
+                )
                 archive.writestr(
                     "ABOUT.txt",
                     "LogVault\n"
                     f"{description}\n"
                     "来源：共享日志中按插件标识筛选的记录\n"
+                    f"记录起点: {started}\n"
                     f"Generated: {datetime.now().isoformat(timespec='seconds')}\n",
                 )
                 for label, root, path in entries:
@@ -530,7 +628,9 @@ class CommandHandler:
                         key = os.path.normcase(str(path.resolve()))
                         if key in seen:
                             continue
-                        content = cls._filtered_log_text(path, aliases, sensitive_filter)
+                        content = cls._filtered_log_text(
+                            path, aliases, sensitive_filter, cutoff
+                        )
                         if not content:
                             continue
                         relative = path.relative_to(root).as_posix()
@@ -557,29 +657,62 @@ class CommandHandler:
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         return f"{prefix}_{stamp}.zip" if prefix else f"_{stamp}.zip"
 
-    @staticmethod
+    @classmethod
     def _write_zip(
+        cls,
         zip_path: Path,
         entries: list[tuple[str, Path, Path]],
         description: str,
+        cutoff: float | None = None,
+        slice_enabled: bool = True,
     ) -> int:
+        """Archive log files, trimming records older than *cutoff*.
+
+        A file whose oldest parsable record is already newer than the cutoff is
+        stored byte-for-byte, which keeps rotated .gz members intact.  A file
+        that spans the cutoff is rewritten with only the matching records.  A
+        file without any parsable timestamp is kept in full so that unusual
+        formats are never silently dropped.
+        """
+
         count = 0
         seen: set[str] = set()
+        slicing = bool(slice_enabled) and cutoff is not None
+        boundary = float(cutoff) if cutoff is not None else 0.0
+        about = [
+            "LogVault",
+            description,
+            f"Generated: {datetime.now().isoformat(timespec='seconds')}",
+        ]
+        if slicing:
+            started = datetime.fromtimestamp(boundary).strftime("%Y-%m-%d %H:%M:%S")
+            about.append(f"记录起点: {started}")
+            about.append(
+                "说明：跨越起点的日志文件已按记录时间裁剪；无法解析时间戳的文件保持完整。"
+            )
         try:
             with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
-                archive.writestr(
-                    "ABOUT.txt",
-                    f"LogVault\n{description}\nGenerated: {datetime.now().isoformat(timespec='seconds')}\n",
-                )
+                archive.writestr("ABOUT.txt", "\n".join(about) + "\n")
                 for label, root, path in entries:
                     try:
-                        arcname = CommandHandler._relative_arcname(label, root, path)
+                        arcname = cls._relative_arcname(label, root, path)
                         if arcname in seen:
                             continue
-                        archive.write(path, arcname)
+                        text: str | None = None
+                        if slicing:
+                            oldest = cls._oldest_record_time(path)
+                            if oldest is not None and oldest < boundary:
+                                text = cls._slice_log_text(path, boundary)
+                                if not text.strip():
+                                    seen.add(arcname)
+                                    continue
+                        if text is None:
+                            archive.write(path, arcname)
+                        else:
+                            archive.writestr(cls._sliced_arcname(arcname), text)
                         seen.add(arcname)
                         count += 1
-                    except (OSError, ValueError):
+                    except (OSError, EOFError, UnicodeError, ValueError):
                         continue
         except Exception:
             try:
@@ -588,3 +721,452 @@ class CommandHandler:
                 pass
             raise
         return count
+
+    @staticmethod
+    def _open_text(path: Path):
+        opener = gzip.open if path.name.casefold().endswith(".gz") else open
+        return opener(path, "rt", encoding="utf-8", errors="ignore")
+
+    @classmethod
+    def _oldest_record_time(cls, path: Path) -> float | None:
+        """Return the timestamp of the first parsable record near the top."""
+
+        try:
+            with cls._open_text(path) as stream:
+                for index, line in enumerate(stream):
+                    if index >= cls.MAX_HEAD_SCAN_LINES:
+                        break
+                    stamp = _parse_record_time(line)
+                    if stamp is not None:
+                        return stamp
+        except (OSError, EOFError, UnicodeError, ValueError):
+            return None
+        return None
+
+    @classmethod
+    def _slice_log_text(cls, path: Path, cutoff: float) -> str:
+        """Keep only the records at or after *cutoff*, traceback lines included."""
+
+        kept: list[str] = []
+        include = True
+        with cls._open_text(path) as stream:
+            for line in stream:
+                if _LOG_RECORD_START_RE.match(line):
+                    stamp = _parse_record_time(line)
+                    include = True if stamp is None else stamp >= cutoff
+                if include:
+                    kept.append(line)
+        return "".join(kept)
+
+    @staticmethod
+    def _sliced_arcname(arcname: str) -> str:
+        """Sliced members are stored as plain text, so drop the .gz suffix."""
+
+        return arcname[:-3] if arcname.casefold().endswith(".gz") else arcname
+
+    # ------------------------------------------------------------------
+    # WebUI support
+    #
+    # The dashboard page needs to browse, read, tail, download and delete
+    # log files.  All of it goes through the helpers below so that path
+    # handling and sensitive-value masking stay in one place.
+    # ------------------------------------------------------------------
+
+    def _browse_sources(self) -> list[tuple[str, Path]]:
+        """Every root the WebUI may browse: current, legacy and host dirs."""
+
+        sources = list(self._sources())
+        for index, log_dir in enumerate(self.host_log_dirs, start=1):
+            if log_dir.is_dir():
+                sources.append((f"host_{index}_{log_dir.name}", log_dir))
+        return sources
+
+    def _source_root(self, label: str) -> Path | None:
+        for candidate, root in self._browse_sources():
+            if candidate == label:
+                return root
+        return None
+
+    @staticmethod
+    def _source_kind(label: str) -> str:
+        if label == "current":
+            return "current"
+        if label.startswith("host_"):
+            return "host"
+        return "legacy"
+
+    @classmethod
+    def make_file_id(cls, label: str, root: Path, path: Path) -> str:
+        try:
+            relative = path.relative_to(root).as_posix()
+        except ValueError:
+            relative = path.name
+        return f"{label}{cls.FILE_ID_SEPARATOR}{relative}"
+
+    def resolve_file(self, file_id: str) -> tuple[str, Path, Path] | None:
+        """Map a WebUI file id back to a real log file, refusing escapes."""
+
+        raw = str(file_id or "")
+        if self.FILE_ID_SEPARATOR not in raw:
+            return None
+        label, _, relative = raw.partition(self.FILE_ID_SEPARATOR)
+        root = self._source_root(label.strip())
+        if root is None:
+            return None
+        segments = relative.replace("\\", "/").split("/")
+        if not segments or any(segment in ("", ".", "..") for segment in segments):
+            return None
+        try:
+            root_resolved = root.resolve()
+            target = (root_resolved / Path(*segments)).resolve()
+        except (OSError, RuntimeError, ValueError):
+            return None
+        if not target.is_relative_to(root_resolved):
+            return None
+        if not target.is_file() or not _is_log_file(target):
+            return None
+        return label.strip(), root_resolved, target
+
+    @classmethod
+    def _line_level(cls, line: str) -> str | None:
+        """Best-effort level of a log line, from the first known level token."""
+
+        for match in _LEVEL_TOKEN_RE.finditer(line[:160]):
+            token = match.group(1).upper()
+            if token in cls.LEVEL_ORDER:
+                return token
+            alias = _SHORT_LEVEL_ALIASES.get(token)
+            if alias:
+                return alias
+        return None
+
+    @staticmethod
+    def _categorize(root: Path, path: Path) -> tuple[str, str, str]:
+        """Return (category key, display name, kind) for one log file."""
+
+        try:
+            parts = path.relative_to(root).parts
+        except ValueError:
+            parts = (path.name,)
+        top = parts[0].casefold() if parts else ""
+        if top == "plugins" and len(parts) >= 2:
+            return f"plugins/{parts[1]}", parts[1], "plugin"
+        builtin = {"all": "汇总日志", "core": "核心日志", "errors": "错误日志"}
+        if top in builtin:
+            return top, builtin[top], "builtin"
+        return "other", "其他日志", "other"
+
+    def list_categories(self) -> list[dict]:
+        """Group every readable log file into a browsable category tree."""
+
+        groups: dict[tuple[str, str], dict] = {}
+
+        def bucket(source: str, key: str, name: str, kind: str) -> dict:
+            entry = groups.get((source, key))
+            if entry is None:
+                entry = {
+                    "source": source,
+                    "source_kind": self._source_kind(source),
+                    "key": key,
+                    "name": name,
+                    "kind": kind,
+                    "count": 0,
+                    "size": 0,
+                    "mtime": 0.0,
+                }
+                groups[(source, key)] = entry
+            return entry
+
+        for label, root in self._browse_sources():
+            bucket(label, self.ALL_CATEGORY, "全部", "all")
+            for path in self._iter_files(root):
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+                key, name, kind = self._categorize(root, path)
+                targets = [
+                    bucket(label, self.ALL_CATEGORY, "全部", "all"),
+                    bucket(label, key, name, kind),
+                ]
+                for entry in targets:
+                    entry["count"] += 1
+                    entry["size"] += stat.st_size
+                    entry["mtime"] = max(entry["mtime"], stat.st_mtime)
+
+        kind_order = {"all": 0, "builtin": 1, "plugin": 2, "other": 3}
+        return sorted(
+            groups.values(),
+            key=lambda item: (
+                0 if item["source"] == "current" else 1,
+                item["source"],
+                kind_order.get(item["kind"], 9),
+                item["name"].casefold(),
+            ),
+        )
+
+    def list_files(
+        self, source: str | None = None, category: str | None = None
+    ) -> list[dict]:
+        wanted_source = (source or "").strip() or None
+        wanted_category = (category or "").strip() or None
+        files: list[dict] = []
+        for label, root in self._browse_sources():
+            if wanted_source and label != wanted_source:
+                continue
+            for path in self._iter_files(root):
+                key, name, kind = self._categorize(root, path)
+                if (
+                    wanted_category
+                    and wanted_category != self.ALL_CATEGORY
+                    and key != wanted_category
+                ):
+                    continue
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+                try:
+                    relative = path.relative_to(root).as_posix()
+                except ValueError:
+                    relative = path.name
+                lowered = path.name.casefold()
+                files.append(
+                    {
+                        "id": self.make_file_id(label, root, path),
+                        "name": path.name,
+                        "relative": relative,
+                        "size": stat.st_size,
+                        "mtime": stat.st_mtime,
+                        "compressed": lowered.endswith(".gz"),
+                        "active": lowered.endswith(".log"),
+                        "source": label,
+                        "source_kind": self._source_kind(label),
+                        "category": key,
+                        "category_name": name,
+                        "category_kind": kind,
+                        "deletable": label == "current" and not lowered.endswith(".log"),
+                    }
+                )
+        files.sort(key=lambda item: item["mtime"], reverse=True)
+        return files
+
+    def _mask(self, text: str) -> str:
+        if not text or not self.sensitive_filter:
+            return text
+        mask_text = getattr(self.sensitive_filter, "mask_text", None)
+        if not callable(mask_text):
+            return text
+        try:
+            return mask_text(text)
+        except (AttributeError, TypeError, ValueError):
+            return text
+
+    def read_file_lines(
+        self,
+        file_id: str,
+        tail: int = 500,
+        level: str | None = None,
+        keyword: str | None = None,
+    ) -> dict | None:
+        """Return the last *tail* matching lines of one log file."""
+
+        resolved = self.resolve_file(file_id)
+        if resolved is None:
+            return None
+        label, root, path = resolved
+        try:
+            tail = max(1, min(int(tail or 500), 5000))
+        except (TypeError, ValueError):
+            tail = 500
+        wanted = (level or "").strip().upper() or None
+        threshold = self.LEVEL_ORDER.get(wanted) if wanted else None
+        needle = (keyword or "").strip().casefold() or None
+
+        buffer: deque[str] = deque(maxlen=tail)
+        scanned = 0
+        matched = 0
+        truncated = False
+        keep = True
+        error: str | None = None
+        try:
+            with self._open_text(path) as stream:
+                for line in stream:
+                    scanned += 1
+                    if scanned > self.MAX_SCAN_LINES:
+                        truncated = True
+                        break
+                    text = line.rstrip("\r\n")
+                    if threshold is not None:
+                        found = self._line_level(text)
+                        if found is not None:
+                            keep = self.LEVEL_ORDER.get(found, 0) >= threshold
+                        if not keep:
+                            continue
+                    if needle and needle not in text.casefold():
+                        continue
+                    matched += 1
+                    buffer.append(text)
+        except (OSError, EOFError, UnicodeError, ValueError) as exc:
+            error = f"读取失败: {exc}"
+
+        lines = [self._mask(item) for item in buffer]
+        try:
+            stat = path.stat()
+            size = stat.st_size
+            mtime = stat.st_mtime
+        except OSError:
+            size = 0
+            mtime = 0.0
+        return {
+            "id": self.make_file_id(label, root, path),
+            "name": path.name,
+            "source": label,
+            "lines": lines,
+            "scanned": scanned,
+            "matched": matched,
+            "truncated": truncated,
+            "size": size,
+            "mtime": mtime,
+            "compressed": path.name.casefold().endswith(".gz"),
+            "position": size if not path.name.casefold().endswith(".gz") else 0,
+            "error": error,
+        }
+
+    def tail_bytes(
+        self, file_id: str, position: int = 0, limit: int = 65536
+    ) -> dict | None:
+        """Incrementally read new bytes so the WebUI can follow a live log."""
+
+        resolved = self.resolve_file(file_id)
+        if resolved is None:
+            return None
+        label, root, path = resolved
+        identifier = self.make_file_id(label, root, path)
+        if path.name.casefold().endswith(".gz"):
+            return {
+                "id": identifier,
+                "supported": False,
+                "position": 0,
+                "size": 0,
+                "reset": False,
+                "lines": [],
+            }
+        try:
+            limit = max(1024, min(int(limit or 65536), 1024 * 1024))
+        except (TypeError, ValueError):
+            limit = 65536
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return None
+        try:
+            start = int(position or 0)
+        except (TypeError, ValueError):
+            start = 0
+        reset = False
+        if start < 0 or start > size:
+            # The file was rotated or truncated under us; restart from the tail.
+            start = max(0, size - limit)
+            reset = True
+        if size - start > limit:
+            start = size - limit
+            reset = True
+        try:
+            with path.open("rb") as stream:
+                stream.seek(start)
+                chunk = stream.read(limit)
+        except OSError:
+            return None
+        text = chunk.decode("utf-8", errors="ignore")
+        consumed = len(chunk)
+        if consumed and not text.endswith("\n"):
+            cut = text.rfind("\n")
+            if cut >= 0:
+                consumed -= len(text[cut + 1 :].encode("utf-8", errors="ignore"))
+                text = text[: cut + 1]
+        if reset and start > 0:
+            _, separator, remainder = text.partition("\n")
+            if separator:
+                text = remainder
+        return {
+            "id": identifier,
+            "supported": True,
+            "position": start + consumed,
+            "size": size,
+            "reset": reset,
+            "lines": [self._mask(line) for line in text.splitlines()],
+        }
+
+    def delete_files(self, file_ids: Iterable[str]) -> dict:
+        """Delete rotated log files from the current data dir only."""
+
+        deleted = 0
+        freed = 0
+        skipped: list[dict] = []
+        for file_id in file_ids or []:
+            resolved = self.resolve_file(file_id)
+            if resolved is None:
+                skipped.append({"id": str(file_id), "reason": "无效或越界的文件标识"})
+                continue
+            label, _root, path = resolved
+            if label != "current":
+                skipped.append(
+                    {"id": str(file_id), "reason": "只允许删除当前数据目录中的日志"}
+                )
+                continue
+            if path.name.casefold().endswith(".log"):
+                skipped.append(
+                    {"id": str(file_id), "reason": "正在写入的日志不可删除"}
+                )
+                continue
+            try:
+                size = path.stat().st_size
+                path.unlink()
+            except OSError as exc:
+                skipped.append({"id": str(file_id), "reason": f"删除失败: {exc}"})
+                continue
+            deleted += 1
+            freed += size
+        return {"deleted": deleted, "skipped": skipped, "freed_bytes": freed}
+
+    def overview_payload(self) -> dict:
+        """Everything the WebUI needs for its first render."""
+
+        stats = self.cleaner.get_stats() if self.cleaner else self._stats(self.data_dir)
+
+        def iso(value) -> str | None:
+            formatter = getattr(value, "isoformat", None)
+            if not callable(formatter):
+                return None
+            try:
+                return formatter(timespec="seconds")
+            except TypeError:
+                return formatter()
+
+        directories = {
+            str(name): {
+                "count": int(item.get("count", 0)),
+                "size": int(item.get("size", 0)),
+            }
+            for name, item in (stats.get("directories") or {}).items()
+        }
+        return {
+            "data_dir": str(self.data_dir),
+            "total_files": stats.get("total_files", 0),
+            "total_size_mb": stats.get("total_size_mb", 0),
+            "compressed_count": stats.get("compressed_count", 0),
+            "oldest_file": iso(stats.get("oldest_file")),
+            "newest_file": iso(stats.get("newest_file")),
+            "directories": directories,
+            "slice_by_record_time": self.slice_by_record_time,
+            "sources": [
+                {
+                    "label": label,
+                    "kind": self._source_kind(label),
+                    "path": str(root),
+                }
+                for label, root in self._browse_sources()
+            ],
+            "categories": self.list_categories(),
+        }

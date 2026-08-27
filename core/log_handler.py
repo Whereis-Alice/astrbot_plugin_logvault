@@ -14,12 +14,16 @@ import os
 import re
 import shutil
 import threading
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from logging.handlers import RotatingFileHandler, TimedRotatingFileHandler
 from pathlib import Path
 
 from .log_router import LogRouter
+
+
+_PLUGIN_TAG_PLACEHOLDERS = {"core", "plug", "plugin", ""}
 
 
 _compress_executor = ThreadPoolExecutor(
@@ -215,14 +219,45 @@ def _compress_old_files_sync(dir_path: str, base_name: str, current_file: str):
         pass
 
 
+class LogVaultFormatter(logging.Formatter):
+    """Formatter that keeps AstrBot's plugin tag in the persisted line.
+
+    The tag is what makes a shared file such as all.log filterable per plugin
+    later on (see CommandHandler._line_matches_plugin) and it is the only
+    reliable owner marker for records whose pathname points at the logging
+    bridge instead of the plugin module.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        tag = str(getattr(record, "plugin_tag", "") or "").strip()
+        if not tag:
+            tag = "[Core]"
+        elif not (tag.startswith("[") and tag.endswith("]")):
+            tag = f"[{tag}]"
+        # Written back onto the record so every sibling handler formats the
+        # same value instead of recomputing it.
+        record.logvault_tag = tag
+        return super().format(record)
+
+
 class LogVaultHandler(logging.Handler):
     """Persist AstrBot records into global, core, error, and plugin files."""
 
-    def __init__(self, data_dir: Path, config: dict, sensitive_filter=None):
+    def __init__(
+        self,
+        data_dir: Path,
+        config: dict,
+        sensitive_filter=None,
+        plugin_name_resolver: Callable[[str], str | None] | None = None,
+    ):
         super().__init__()
         self.data_dir = Path(data_dir)
         self.config = config
         self.sensitive_filter = sensitive_filter
+        # Resolves a "<dirname>" hint against the set of installed plugins so
+        # records logged through a plain logging.getLogger(__name__) call are
+        # still attributed to their owner.
+        self.plugin_name_resolver = plugin_name_resolver
         self.handlers: dict[str, logging.Handler] = {}
         self._plugin_handler_lock = threading.Lock()
         self._init_directories()
@@ -311,8 +346,11 @@ class LogVaultHandler(logging.Handler):
             )
 
         handler.setFormatter(
-            logging.Formatter(
-                fmt="[%(asctime)s] [%(levelname)-5s] [%(filename)s:%(lineno)d]: %(message)s",
+            LogVaultFormatter(
+                fmt=(
+                    "[%(asctime)s] [%(levelname)-5s] %(logvault_tag)s "
+                    "[%(filename)s:%(lineno)d]: %(message)s"
+                ),
                 datefmt="%Y-%m-%d %H:%M:%S",
             )
         )
@@ -349,6 +387,37 @@ class LogVaultHandler(logging.Handler):
                     )
         return self.handlers[key]
 
+    def _resolve_plugin_hint(self, record: logging.LogRecord) -> str | None:
+        """Attribute a record to an installed plugin using weak hints.
+
+        A plugin that calls logging.getLogger(__name__) instead of
+        astrbot.api.logger is enriched with plugin_tag "[Plug]" and
+        source_file "<plugin_dir>.<module>".  The directory prefix is only
+        accepted when it matches a plugin AstrBot actually has installed, so a
+        core module such as "core.utils" is never mistaken for a plugin.
+        """
+
+        resolver = self.plugin_name_resolver
+        if resolver is None:
+            return None
+        candidates: list[str] = []
+        source_file = str(getattr(record, "source_file", "") or "").strip()
+        if source_file:
+            candidates.append(source_file.split(".", 1)[0])
+        tag = str(getattr(record, "plugin_tag", "") or "").strip().strip("[]")
+        if tag and tag.casefold() not in _PLUGIN_TAG_PLACEHOLDERS:
+            candidates.append(tag)
+        for candidate in candidates:
+            if not candidate:
+                continue
+            try:
+                resolved = resolver(candidate)
+            except (AttributeError, RuntimeError, TypeError, ValueError):
+                return None
+            if resolved:
+                return str(resolved)
+        return None
+
     def emit(self, record: logging.LogRecord):
         try:
             seen_handlers = getattr(record, "_logvault_seen_handlers", None)
@@ -366,7 +435,9 @@ class LogVaultHandler(logging.Handler):
             if "all" in self.handlers:
                 self.handlers["all"].emit(record)
 
-            plugin_name = LogRouter.extract_plugin_name_from_record(record)
+            plugin_name = LogRouter.extract_plugin_name_from_record(
+                record
+            ) or self._resolve_plugin_hint(record)
             if plugin_name and self.config.get("enable_plugin_separation", True):
                 self.get_plugin_handler(plugin_name).emit(record)
             elif "core" in self.handlers:

@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LogVault</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div class="lv-app">
+      <header class="lv-header">
+        <div class="lv-title">
+          <h1 id="page-title">日志中心</h1>
+          <p id="page-desc" class="lv-muted">按来源与插件分类查看、跟随、下载和清理 AstrBot 日志。</p>
+        </div>
+        <div class="lv-actions">
+          <button id="btn-refresh" class="lv-btn" type="button">刷新</button>
+          <button id="btn-clean" class="lv-btn lv-btn-warn" type="button">立即清理</button>
+        </div>
+      </header>
+
+      <section id="stats" class="lv-stats" aria-live="polite"></section>
+
+      <section class="lv-bundle">
+        <span class="lv-bundle-label">打包下载</span>
+        <select id="bundle-target" class="lv-input" aria-label="打包范围">
+          <option value="all">全部日志</option>
+          <option value="errors">仅错误日志</option>
+          <option value="plugin">指定插件</option>
+        </select>
+        <input id="bundle-plugin" class="lv-input" type="text" placeholder="插件名" aria-label="插件名" hidden />
+        <label class="lv-inline">最近
+          <input id="bundle-days" class="lv-input lv-input-num" type="number" min="1" max="3650" value="7" aria-label="天数" />
+          天
+        </label>
+        <button id="btn-bundle" class="lv-btn lv-btn-primary" type="button">下载 ZIP</button>
+        <span id="bundle-hint" class="lv-muted"></span>
+      </section>
+
+      <div class="lv-body">
+        <aside class="lv-side">
+          <div class="lv-side-head">
+            <h2>分类</h2>
+            <input id="category-filter" class="lv-input" type="search" placeholder="过滤分类" aria-label="过滤分类" />
+          </div>
+          <div id="tree" class="lv-tree" role="tree"></div>
+        </aside>
+
+        <main class="lv-main">
+          <div class="lv-toolbar">
+            <span id="file-scope" class="lv-scope">未选择分类</span>
+            <input id="file-filter" class="lv-input" type="search" placeholder="过滤文件名" aria-label="过滤文件名" />
+            <button id="btn-delete" class="lv-btn lv-btn-danger" type="button" disabled>删除所选</button>
+          </div>
+          <div class="lv-filelist">
+            <table class="lv-table">
+              <thead>
+                <tr>
+                  <th class="lv-col-check"><input id="check-all" type="checkbox" aria-label="全选可删除文件" /></th>
+                  <th>文件</th>
+                  <th>分类</th>
+                  <th class="lv-num">大小</th>
+                  <th>修改时间</th>
+                </tr>
+              </thead>
+              <tbody id="file-rows"></tbody>
+            </table>
+            <p id="file-empty" class="lv-muted lv-empty">请选择左侧分类。</p>
+          </div>
+
+          <div class="lv-viewer">
+            <div class="lv-toolbar">
+              <span id="viewer-title" class="lv-scope">未打开文件</span>
+              <select id="view-level" class="lv-input" aria-label="最低级别">
+                <option value="">全部级别</option>
+                <option value="DEBUG">DEBUG 及以上</option>
+                <option value="INFO">INFO 及以上</option>
+                <option value="WARNING">WARNING 及以上</option>
+                <option value="ERROR">ERROR 及以上</option>
+                <option value="CRITICAL">CRITICAL</option>
+              </select>
+              <input id="view-keyword" class="lv-input" type="search" placeholder="关键词" aria-label="关键词" />
+              <label class="lv-inline">行数
+                <input id="view-tail" class="lv-input lv-input-num" type="number" min="50" max="5000" step="50" value="500" aria-label="行数" />
+              </label>
+              <label class="lv-inline"><input id="view-follow" type="checkbox" /> 实时跟随</label>
+              <button id="btn-reload" class="lv-btn" type="button" disabled>重新加载</button>
+              <button id="btn-download" class="lv-btn" type="button" disabled>下载</button>
+            </div>
+            <pre id="log-view" class="lv-log" tabindex="0" aria-live="polite"></pre>
+            <p id="view-meta" class="lv-muted"></p>
+          </div>
+        </main>
+      </div>
+
+      <div id="toast" class="lv-toast" role="status" hidden></div>
+    </div>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

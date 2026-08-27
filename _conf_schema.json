@@ -1,9 +1,46 @@
 {
   "log_level": {
     "description": "全局最低记录级别",
+    "hint": "只决定 LogVault 写入文件的下限；若 AstrBot 控制台日志级别更高，低级别记录在到达本插件前就已被丢弃，需要配合 force_source_debug。",
     "type": "string",
     "default": "DEBUG",
     "options": ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+  },
+  "capture_mode": {
+    "description": "日志捕获方式",
+    "hint": "auto=优先挂载 loguru sink（可捕获核心、插件与第三方库的全部日志），失败自动回退；loguru=强制 sink；logging=只挂载 logging 处理器（旧行为）。两种方式互斥，不会重复写入。",
+    "type": "string",
+    "default": "auto",
+    "options": ["auto", "loguru", "logging"]
+  },
+  "capture_third_party": {
+    "description": "logging 兼容模式下同时捕获第三方库日志",
+    "hint": "仅在 capture_mode=logging 时生效，会额外挂载 root logger。",
+    "type": "bool",
+    "default": true
+  },
+  "force_source_debug": {
+    "description": "强制把上游 logger 级别调到 log_level",
+    "hint": "解决“日志不全”的关键开关：AstrBot 会把控制台级别同步到 astrbot 与各插件 logger，级别过高的记录根本不会产生。开启后 AstrBot 控制台也会变得更啰嗦。",
+    "type": "bool",
+    "default": false
+  },
+  "include_trace_log": {
+    "description": "包含 AstrBot trace 级链路日志",
+    "hint": "trace 日志量极大，默认过滤。",
+    "type": "bool",
+    "default": false
+  },
+  "backfill_startup_logs": {
+    "description": "回填插件加载前的启动日志",
+    "hint": "从 AstrBot 控制台缓存中补写 LogVault 启动之前的日志，按时间水位去重，不会重复回填。",
+    "type": "bool",
+    "default": true
+  },
+  "backfill_limit": {
+    "description": "单次回填的最大条数",
+    "type": "int",
+    "default": 500
   },
   "max_file_size_mb": {
     "description": "单个日志文件最大大小(MB)",
@@ -72,6 +109,11 @@
     "type": "int",
     "default": 30
   },
+  "clean_interval_minutes": {
+    "description": "自动清理执行间隔(分钟)",
+    "type": "int",
+    "default": 60
+  },
   "enable_sensitive_filter": {
     "description": "启用敏感信息脱敏",
     "type": "bool",
@@ -99,5 +141,11 @@
     "hint": "当 AstrBot 日志写在非默认 data/logs 目录时，用于按插件筛选后台日志；仅读取，不会修改。",
     "type": "list",
     "default": []
+  },
+  "slice_by_record_time": {
+    "description": "按日志内记录时间裁剪导出范围",
+    "hint": "开启后 send/export 的天数按每行日志自己的时间戳裁剪，跨天的 all.log 只会导出指定天数内的行；关闭则退回按文件修改时间整份打包。",
+    "type": "bool",
+    "default": true
   }
 }

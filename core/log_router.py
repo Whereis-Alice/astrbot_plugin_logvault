@@ -132,12 +132,24 @@ class LogRouter:
             if plugin_name:
                 return plugin_name
 
-        for attribute in ("plugin_tag", "source_file"):
-            plugin_name = LogRouter._extract_explicit_plugin_name(
-                getattr(record, attribute, None)
-            )
-            if plugin_name:
-                return plugin_name
+        # plugin_tag is authoritative: AstrBot sets it to "[<plugin_name>]"
+        # for per-plugin loggers and to "[Core]"/"[Plug]" otherwise.  Generic
+        # names are accepted here so plugins whose directory does not follow
+        # the astrbot_plugin_* convention are still routed by name; the
+        # candidate check rejects the Core/Plug placeholders.
+        plugin_name = LogRouter._extract_explicit_plugin_name(
+            getattr(record, "plugin_tag", None), allow_generic=True
+        )
+        if plugin_name:
+            return plugin_name
+
+        # source_file is "<dirname>.<module>" and only trustworthy when it
+        # carries a real plugin ID; a bare "core.foo" must not become a plugin.
+        plugin_name = LogRouter._extract_explicit_plugin_name(
+            getattr(record, "source_file", None)
+        )
+        if plugin_name:
+            return plugin_name
 
         try:
             message = record.getMessage()  # type: ignore[attr-defined]

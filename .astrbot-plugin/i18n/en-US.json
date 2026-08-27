@@ -1,0 +1,88 @@
+{
+  "metadata": {
+    "display_name": "LogVault Log Center",
+    "description": "Archive AstrBot logs per plugin and browse, follow and clean them from the dashboard."
+  },
+  "pages": {
+    "logs": {
+      "title": "Log Center",
+      "desc": "Browse, follow, download and clean AstrBot logs grouped by source and plugin.",
+      "action": {
+        "refresh": "Refresh",
+        "clean": "Clean now",
+        "bundle": "Download ZIP",
+        "delete": "Delete selected",
+        "reload": "Reload",
+        "download": "Download"
+      },
+      "placeholder": {
+        "category": "Filter categories",
+        "file": "Filter file names",
+        "keyword": "Keyword"
+      },
+      "stats": {
+        "files": "Files",
+        "size": "Size",
+        "compressed": "Compressed",
+        "newest": "Newest",
+        "oldest": "Oldest",
+        "mode": "Capture mode",
+        "handlerLevel": "Writer level",
+        "sourceLevel": "AstrBot level",
+        "forwarded": "Forwarded",
+        "dropped": "Dropped",
+        "backfilled": "Backfilled",
+        "pluginLoggers": "Plugin loggers",
+        "version": "Version",
+        "slice": "Slice by record time",
+        "warning": "Notice",
+        "dataDir": "Data dir"
+      },
+      "common": {
+        "off": "off"
+      },
+      "tree": {
+        "empty": "No matching category"
+      },
+      "files": {
+        "empty": "No log file in this category",
+        "pick": "Pick a category on the left.",
+        "none": "No category selected",
+        "unit": "files"
+      },
+      "tag": {
+        "active": "writing"
+      },
+      "meta": {
+        "matched": "Matched",
+        "scanned": "Scanned",
+        "size": "Size",
+        "mtime": "Modified",
+        "truncated": "Scan limit reached, showing partial content",
+        "compressed": "Compressed files cannot be followed live"
+      },
+      "bundle": {
+        "working": "Building archive...",
+        "done": "Archive ready"
+      },
+      "confirm": {
+        "delete": "Delete the selected log files? This cannot be undone.",
+        "clean": "Run compression and retention cleanup now?"
+      },
+      "toast": {
+        "refreshed": "Refreshed",
+        "deleted": "Deleted",
+        "skipped": "Skipped",
+        "cleaned": "Cleanup finished",
+        "compressed": "compressed",
+        "removed": "removed",
+        "rotated": "Log rotated, view reset",
+        "followUnsupported": "This file cannot be followed live",
+        "needPlugin": "Please enter a plugin name"
+      },
+      "error": {
+        "request": "Request failed"
+      }
+    }
+  }
+}

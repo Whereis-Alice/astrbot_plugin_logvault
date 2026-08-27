@@ -6,6 +6,12 @@ class ConfigManager:
 
     DEFAULTS: ClassVar[dict[str, Any]] = {
         "log_level": "DEBUG",
+        "capture_mode": "auto",
+        "capture_third_party": True,
+        "force_source_debug": False,
+        "include_trace_log": False,
+        "backfill_startup_logs": True,
+        "backfill_limit": 500,
         "max_file_size_mb": 10,
         "backup_count": 5,
         "rotation_strategy": "size",
@@ -19,11 +25,13 @@ class ConfigManager:
         "auto_clean_enabled": True,
         "max_total_size_mb": 500,
         "max_age_days": 30,
+        "clean_interval_minutes": 60,
         "enable_sensitive_filter": True,
         "sensitive_keywords": "token,password,secret,api_key,apikey,access_key,accesskey",
         "include_legacy_data": True,
         "legacy_data_dirs": [],
         "host_log_dirs": [],
+        "slice_by_record_time": True,
     }
 
     def __init__(self, config: dict):

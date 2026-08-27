@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 import zipfile
+from datetime import datetime, timedelta
 from pathlib import Path
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -17,6 +18,13 @@ from core.config_manager import ConfigManager
 from core.log_cleaner import LogCleaner
 from core.log_handler import LogVaultHandler
 from core.sensitive_filter import SensitiveFilter
+
+
+def _stamp(days_ago: float = 0.0) -> str:
+    """A LogVault/AstrBot style timestamp relative to now."""
+
+    moment = datetime.now() - timedelta(days=days_ago)
+    return moment.strftime("%Y-%m-%d %H:%M:%S.") + f"{moment.microsecond // 1000:03d}"
 
 
 class LogVaultBehaviourTests(unittest.TestCase):
@@ -181,11 +189,12 @@ class LogVaultBehaviourTests(unittest.TestCase):
             host_logs = root / "logs"
             host_logs.mkdir(parents=True)
             backend_log = host_logs / "astrbot.log"
+            stamp = _stamp()
             backend_log.write_text(
-                "[2026-08-18 15:12:40.321] [astrbot_plugin_dynamic_card_plus]\n"
+                f"[{stamp}] [astrbot_plugin_dynamic_card_plus]\n"
                 "[INFO]\n"
                 "[astrbot_plugin_dynamic_card_plus.main:1315]: [astrbot_plugin_dynamic_card_plus] reminder reached tool\n"
-                "[2026-08-18 15:12:41.000] [Core]\n"
+                f"[{stamp}] [Core]\n"
                 "[INFO]\n"
                 "[runners.tool_loop_agent_runner:1349]: unrelated core record\n",
                 encoding="utf-8",
@@ -223,7 +232,7 @@ class LogVaultBehaviourTests(unittest.TestCase):
             host_logs = root / "logs"
             host_logs.mkdir(parents=True)
             (host_logs / "astrbot.log").write_text(
-                "[2026-08-18 15:12:40.321] [astrbot_plugin_demo]\n"
+                f"[{_stamp()}] [astrbot_plugin_demo]\n"
                 "[INFO]\n"
                 "[astrbot_plugin_demo.main:1]: [astrbot_plugin_demo] token=real-secret\n",
                 encoding="utf-8",

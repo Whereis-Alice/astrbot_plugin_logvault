@@ -49,10 +49,18 @@ class LogCleaner:
                 pass
             self._task = None
 
+    def _interval_seconds(self) -> float:
+        """Maintenance period in seconds, clamped to 1 minute .. 7 days."""
+
+        minutes = self._positive_int(
+            self.config.get("clean_interval_minutes", 60), 60, minimum=1
+        )
+        return float(min(minutes, 10080) * 60)
+
     async def _cleanup_loop(self):
         while True:
             try:
-                await asyncio.sleep(3600)
+                await asyncio.sleep(self._interval_seconds())
                 await self.cleanup()
             except asyncio.CancelledError:
                 break

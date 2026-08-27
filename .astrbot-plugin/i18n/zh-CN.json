@@ -1,0 +1,88 @@
+{
+  "metadata": {
+    "display_name": "LogVault 日志中心",
+    "description": "分插件归档 AstrBot 日志，并在 Dashboard 中分类查看、跟随与清理。"
+  },
+  "pages": {
+    "logs": {
+      "title": "日志中心",
+      "desc": "按来源与插件分类查看、跟随、下载和清理 AstrBot 日志。",
+      "action": {
+        "refresh": "刷新",
+        "clean": "立即清理",
+        "bundle": "下载 ZIP",
+        "delete": "删除所选",
+        "reload": "重新加载",
+        "download": "下载"
+      },
+      "placeholder": {
+        "category": "过滤分类",
+        "file": "过滤文件名",
+        "keyword": "关键词"
+      },
+      "stats": {
+        "files": "文件数",
+        "size": "占用",
+        "compressed": "已压缩",
+        "newest": "最新",
+        "oldest": "最旧",
+        "mode": "捕获模式",
+        "handlerLevel": "写入级别",
+        "sourceLevel": "AstrBot 级别",
+        "forwarded": "已转发",
+        "dropped": "丢弃",
+        "backfilled": "启动回填",
+        "pluginLoggers": "插件日志器",
+        "version": "版本",
+        "slice": "按记录时间切片",
+        "warning": "提示",
+        "dataDir": "数据目录"
+      },
+      "common": {
+        "off": "关闭"
+      },
+      "tree": {
+        "empty": "没有匹配的分类"
+      },
+      "files": {
+        "empty": "该分类下没有日志文件",
+        "pick": "请选择左侧分类。",
+        "none": "未选择分类",
+        "unit": "个文件"
+      },
+      "tag": {
+        "active": "写入中"
+      },
+      "meta": {
+        "matched": "命中行",
+        "scanned": "扫描行",
+        "size": "大小",
+        "mtime": "修改时间",
+        "truncated": "已达扫描上限，仅显示部分内容",
+        "compressed": "压缩文件不支持实时跟随"
+      },
+      "bundle": {
+        "working": "正在打包...",
+        "done": "打包完成"
+      },
+      "confirm": {
+        "delete": "确认删除选中的日志文件？此操作不可恢复。",
+        "clean": "立即执行压缩与过期清理？"
+      },
+      "toast": {
+        "refreshed": "已刷新",
+        "deleted": "已删除",
+        "skipped": "跳过",
+        "cleaned": "清理完成",
+        "compressed": "压缩",
+        "removed": "删除",
+        "rotated": "日志已轮换，视图已重置",
+        "followUnsupported": "该文件不支持实时跟随",
+        "needPlugin": "请填写插件名"
+      },
+      "error": {
+        "request": "请求失败"
+      }
+    }
+  }
+}
