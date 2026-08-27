@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-skin="console" data-density="compact">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -8,89 +8,271 @@
   </head>
   <body>
     <div class="lv-app">
-      <header class="lv-header">
-        <div class="lv-title">
-          <h1 id="page-title">日志中心</h1>
-          <p id="page-desc" class="lv-muted">按来源与插件分类查看、跟随、下载和清理 AstrBot 日志。</p>
+      <div class="lv-aurora" aria-hidden="true"><i></i><i></i><i></i></div>
+
+      <header class="lv-top">
+        <div class="lv-brand">
+          <span class="lv-mark" aria-hidden="true">LV</span>
+          <div class="lv-brand-text">
+            <h1 id="page-title">LogVault 控制台</h1>
+            <p id="page-desc">采集诊断、实时日志流、分类归档与安全导出</p>
+          </div>
         </div>
-        <div class="lv-actions">
+        <div class="lv-top-actions">
+          <div class="lv-field lv-field-skin">
+            <label id="skin-label" for="skin-select">皮肤</label>
+            <select id="skin-select" class="lv-input"></select>
+          </div>
+          <button id="btn-density" class="lv-btn lv-btn-ghost" type="button" title="切换行高">紧凑</button>
           <button id="btn-refresh" class="lv-btn" type="button">刷新</button>
           <button id="btn-clean" class="lv-btn lv-btn-warn" type="button">立即清理</button>
         </div>
       </header>
 
-      <section id="stats" class="lv-stats" aria-live="polite"></section>
+      <nav class="lv-tabs" role="tablist" aria-label="LogVault">
+        <button class="lv-tab is-active" type="button" role="tab" data-tab="overview" aria-selected="true">
+          <span class="lv-tab-ico" aria-hidden="true">◧</span><span data-i18n="tab.overview">运行总览</span>
+        </button>
+        <button class="lv-tab" type="button" role="tab" data-tab="live" aria-selected="false">
+          <span class="lv-tab-ico" aria-hidden="true">▤</span><span data-i18n="tab.live">实时日志</span>
+        </button>
+        <button class="lv-tab" type="button" role="tab" data-tab="files" aria-selected="false">
+          <span class="lv-tab-ico" aria-hidden="true">▥</span><span data-i18n="tab.files">日志文件</span>
+        </button>
+        <button class="lv-tab" type="button" role="tab" data-tab="search" aria-selected="false">
+          <span class="lv-tab-ico" aria-hidden="true">⌕</span><span data-i18n="tab.search">全局搜索</span>
+        </button>
+        <button class="lv-tab" type="button" role="tab" data-tab="diag" aria-selected="false">
+          <span class="lv-tab-ico" aria-hidden="true">◈</span><span data-i18n="tab.diag">采集诊断</span>
+        </button>
+      </nav>
 
-      <section class="lv-bundle">
-        <span class="lv-bundle-label">打包下载</span>
-        <select id="bundle-target" class="lv-input" aria-label="打包范围">
-          <option value="all">全部日志</option>
-          <option value="errors">仅错误日志</option>
-          <option value="plugin">指定插件</option>
-        </select>
-        <input id="bundle-plugin" class="lv-input" type="text" placeholder="插件名" aria-label="插件名" hidden />
-        <label class="lv-inline">最近
-          <input id="bundle-days" class="lv-input lv-input-num" type="number" min="1" max="3650" value="7" aria-label="天数" />
-          天
-        </label>
-        <button id="btn-bundle" class="lv-btn lv-btn-primary" type="button">下载 ZIP</button>
-        <span id="bundle-hint" class="lv-muted"></span>
-      </section>
-
-      <div class="lv-body">
-        <aside class="lv-side">
-          <div class="lv-side-head">
-            <h2>分类</h2>
-            <input id="category-filter" class="lv-input" type="search" placeholder="过滤分类" aria-label="过滤分类" />
+      <main class="lv-panels">
+        <section class="lv-panel is-active" id="panel-overview" role="tabpanel">
+          <div id="metrics" class="lv-metrics" aria-live="polite"></div>
+          <div id="warn-banner" class="lv-banner" hidden></div>
+          <div class="lv-grid-2">
+            <article class="lv-card">
+              <header class="lv-card-head">
+                <h2 data-i18n="card.capture">采集通路</h2>
+                <span id="capture-mode" class="lv-pill"></span>
+              </header>
+              <div id="capture-body" class="lv-card-body"></div>
+            </article>
+            <article class="lv-card">
+              <header class="lv-card-head">
+                <h2 data-i18n="card.sources">日志来源</h2>
+                <span id="sources-count" class="lv-pill"></span>
+              </header>
+              <div id="sources-body" class="lv-card-body"></div>
+            </article>
           </div>
-          <div id="tree" class="lv-tree" role="tree"></div>
-        </aside>
+          <article class="lv-card">
+            <header class="lv-card-head">
+              <h2 data-i18n="card.dist">分类占用</h2>
+              <span id="dist-total" class="lv-pill"></span>
+            </header>
+            <div id="dist-body" class="lv-card-body"></div>
+          </article>
+          <article class="lv-card">
+            <header class="lv-card-head">
+              <h2 data-i18n="card.bundle">打包导出</h2>
+            </header>
+            <div class="lv-card-body">
+              <div class="lv-toolbar">
+                <div class="lv-field">
+                  <label for="bundle-target" data-i18n="bundle.scope">范围</label>
+                  <select id="bundle-target" class="lv-input">
+                    <option value="all" data-i18n="bundle.all">全部日志</option>
+                    <option value="errors" data-i18n="bundle.errors">仅错误日志</option>
+                    <option value="plugin" data-i18n="bundle.plugin">指定插件</option>
+                  </select>
+                </div>
+                <div class="lv-field" id="bundle-plugin-field" hidden>
+                  <label for="bundle-plugin" data-i18n="bundle.pluginName">插件</label>
+                  <input id="bundle-plugin" class="lv-input" type="text" list="plugin-options" placeholder="插件名" />
+                  <datalist id="plugin-options"></datalist>
+                </div>
+                <div class="lv-field">
+                  <label for="bundle-days" data-i18n="bundle.days">最近天数</label>
+                  <input id="bundle-days" class="lv-input lv-input-num" type="number" min="1" max="3650" value="7" />
+                </div>
+                <button id="btn-bundle" class="lv-btn lv-btn-primary" type="button" data-i18n="action.bundle">下载 ZIP</button>
+                <span id="bundle-hint" class="lv-muted"></span>
+              </div>
+              <p class="lv-note" id="slice-note"></p>
+            </div>
+          </article>
+        </section>
 
-        <main class="lv-main">
-          <div class="lv-toolbar">
-            <span id="file-scope" class="lv-scope">未选择分类</span>
-            <input id="file-filter" class="lv-input" type="search" placeholder="过滤文件名" aria-label="过滤文件名" />
-            <button id="btn-delete" class="lv-btn lv-btn-danger" type="button" disabled>删除所选</button>
-          </div>
-          <div class="lv-filelist">
-            <table class="lv-table">
-              <thead>
-                <tr>
-                  <th class="lv-col-check"><input id="check-all" type="checkbox" aria-label="全选可删除文件" /></th>
-                  <th>文件</th>
-                  <th>分类</th>
-                  <th class="lv-num">大小</th>
-                  <th>修改时间</th>
-                </tr>
-              </thead>
-              <tbody id="file-rows"></tbody>
-            </table>
-            <p id="file-empty" class="lv-muted lv-empty">请选择左侧分类。</p>
-          </div>
-
-          <div class="lv-viewer">
-            <div class="lv-toolbar">
-              <span id="viewer-title" class="lv-scope">未打开文件</span>
-              <select id="view-level" class="lv-input" aria-label="最低级别">
+        <section class="lv-panel" id="panel-live" role="tabpanel" hidden>
+          <div class="lv-toolbar lv-toolbar-sticky">
+            <div class="lv-field lv-field-grow">
+              <label for="live-file" data-i18n="live.file">跟随文件</label>
+              <select id="live-file" class="lv-input"></select>
+            </div>
+            <div class="lv-field">
+              <label for="live-level" data-i18n="live.level">级别</label>
+              <select id="live-level" class="lv-input">
                 <option value="">全部级别</option>
-                <option value="DEBUG">DEBUG 及以上</option>
-                <option value="INFO">INFO 及以上</option>
-                <option value="WARNING">WARNING 及以上</option>
-                <option value="ERROR">ERROR 及以上</option>
+                <option value="DEBUG">DEBUG+</option>
+                <option value="INFO">INFO+</option>
+                <option value="WARNING">WARNING+</option>
+                <option value="ERROR">ERROR+</option>
                 <option value="CRITICAL">CRITICAL</option>
               </select>
-              <input id="view-keyword" class="lv-input" type="search" placeholder="关键词" aria-label="关键词" />
-              <label class="lv-inline">行数
-                <input id="view-tail" class="lv-input lv-input-num" type="number" min="50" max="5000" step="50" value="500" aria-label="行数" />
-              </label>
-              <label class="lv-inline"><input id="view-follow" type="checkbox" /> 实时跟随</label>
-              <button id="btn-reload" class="lv-btn" type="button" disabled>重新加载</button>
-              <button id="btn-download" class="lv-btn" type="button" disabled>下载</button>
             </div>
-            <pre id="log-view" class="lv-log" tabindex="0" aria-live="polite"></pre>
-            <p id="view-meta" class="lv-muted"></p>
+            <div class="lv-field">
+              <label for="live-tag" data-i18n="live.tag">来源标签</label>
+              <select id="live-tag" class="lv-input"></select>
+            </div>
+            <div class="lv-field lv-field-grow">
+              <label for="live-keyword" data-i18n="live.keyword">关键词</label>
+              <input id="live-keyword" class="lv-input" type="search" placeholder="搜索日志内容" />
+            </div>
+            <label class="lv-switch">
+              <input id="live-follow" type="checkbox" checked />
+              <span class="lv-switch-track" aria-hidden="true"><i></i></span>
+              <span data-i18n="live.follow">实时跟随</span>
+            </label>
+            <button id="btn-live-copy" class="lv-btn lv-btn-ghost" type="button" data-i18n="action.copy">复制</button>
+            <button id="btn-live-reload" class="lv-btn lv-btn-ghost" type="button" data-i18n="action.reload">重载</button>
+            <button id="btn-live-clear" class="lv-btn lv-btn-ghost" type="button" data-i18n="action.clearView">清屏</button>
           </div>
-        </main>
+          <div id="live-stream" class="lv-stream" tabindex="0" aria-live="polite"></div>
+          <div class="lv-statline"><span id="live-meta"></span><span id="live-hint" class="lv-muted"></span></div>
+        </section>
+
+        <section class="lv-panel" id="panel-files" role="tabpanel" hidden>
+          <div class="lv-split">
+            <aside class="lv-side">
+              <div class="lv-side-head">
+                <h2 data-i18n="files.categories">分类</h2>
+                <input id="category-filter" class="lv-input" type="search" placeholder="过滤分类" />
+              </div>
+              <div id="tree" class="lv-tree" role="tree"></div>
+            </aside>
+            <div class="lv-side-main">
+              <div class="lv-toolbar lv-toolbar-sticky">
+                <span id="file-scope" class="lv-scope">未选择分类</span>
+                <div class="lv-field lv-field-grow">
+                  <input id="file-filter" class="lv-input" type="search" placeholder="过滤文件名" />
+                </div>
+                <select id="file-sort" class="lv-input" aria-label="排序">
+                  <option value="mtime" data-i18n="files.sortMtime">按时间</option>
+                  <option value="size" data-i18n="files.sortSize">按大小</option>
+                  <option value="name" data-i18n="files.sortName">按名称</option>
+                </select>
+                <button id="btn-delete" class="lv-btn lv-btn-danger" type="button" disabled data-i18n="action.delete">删除所选</button>
+              </div>
+              <div class="lv-tablewrap">
+                <table class="lv-table">
+                  <thead>
+                    <tr>
+                      <th class="lv-col-check"><input id="check-all" type="checkbox" aria-label="全选" /></th>
+                      <th data-i18n="files.colFile">文件</th>
+                      <th data-i18n="files.colCategory">分类</th>
+                      <th class="lv-num" data-i18n="files.colSize">大小</th>
+                      <th data-i18n="files.colTime">修改时间</th>
+                      <th class="lv-col-act"></th>
+                    </tr>
+                  </thead>
+                  <tbody id="file-rows"></tbody>
+                </table>
+                <p id="file-empty" class="lv-empty">请选择左侧分类</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="lv-panel" id="panel-search" role="tabpanel" hidden>
+          <div class="lv-toolbar lv-toolbar-sticky">
+            <div class="lv-field lv-field-grow">
+              <label for="search-keyword" data-i18n="search.keyword">关键词</label>
+              <input id="search-keyword" class="lv-input" type="search" placeholder="跨来源搜索全部日志" />
+            </div>
+            <div class="lv-field">
+              <label for="search-limit" data-i18n="search.limit">条数上限</label>
+              <input id="search-limit" class="lv-input lv-input-num" type="number" min="10" max="500" step="10" value="100" />
+            </div>
+            <button id="btn-search" class="lv-btn lv-btn-primary" type="button" data-i18n="action.search">搜索</button>
+            <span id="search-meta" class="lv-muted"></span>
+          </div>
+          <div id="search-results" class="lv-results"></div>
+        </section>
+
+        <section class="lv-panel" id="panel-diag" role="tabpanel" hidden>
+          <div class="lv-grid-2">
+            <article class="lv-card">
+              <header class="lv-card-head">
+                <h2 data-i18n="diag.pipeline">采集链路</h2>
+                <button id="btn-diag-refresh" class="lv-btn lv-btn-ghost" type="button" data-i18n="action.recheck">重新检测</button>
+              </header>
+              <div id="diag-pipeline" class="lv-card-body"></div>
+            </article>
+            <article class="lv-card">
+              <header class="lv-card-head"><h2 data-i18n="diag.routes">WebUI 接口</h2></header>
+              <div id="diag-routes" class="lv-card-body"></div>
+            </article>
+          </div>
+          <article class="lv-card">
+            <header class="lv-card-head"><h2 data-i18n="diag.loggers">已挂载 logger</h2></header>
+            <div id="diag-loggers" class="lv-card-body"></div>
+          </article>
+          <article class="lv-card">
+            <header class="lv-card-head"><h2 data-i18n="diag.tips">排查建议</h2></header>
+            <div id="diag-tips" class="lv-card-body"></div>
+          </article>
+        </section>
+      </main>
+
+      <footer class="lv-status">
+        <span id="status-left" class="lv-muted"></span>
+        <span id="status-right" class="lv-muted"></span>
+      </footer>
+
+      <div id="drawer" class="lv-drawer" hidden aria-hidden="true">
+        <div class="lv-drawer-mask" data-close="1"></div>
+        <div class="lv-drawer-panel" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
+          <header class="lv-drawer-head">
+            <div class="lv-drawer-title">
+              <h2 id="drawer-title">未打开文件</h2>
+              <p id="drawer-sub" class="lv-muted"></p>
+            </div>
+            <button id="drawer-close" class="lv-btn lv-btn-ghost" type="button" data-close="1">关闭</button>
+          </header>
+          <div class="lv-toolbar">
+            <div class="lv-field">
+              <label for="view-level" data-i18n="view.level">级别</label>
+              <select id="view-level" class="lv-input">
+                <option value="">全部级别</option>
+                <option value="DEBUG">DEBUG+</option>
+                <option value="INFO">INFO+</option>
+                <option value="WARNING">WARNING+</option>
+                <option value="ERROR">ERROR+</option>
+                <option value="CRITICAL">CRITICAL</option>
+              </select>
+            </div>
+            <div class="lv-field lv-field-grow">
+              <label for="view-keyword" data-i18n="view.keyword">关键词</label>
+              <input id="view-keyword" class="lv-input" type="search" placeholder="过滤行" />
+            </div>
+            <div class="lv-field">
+              <label for="view-tail" data-i18n="view.tail">行数</label>
+              <input id="view-tail" class="lv-input lv-input-num" type="number" min="50" max="5000" step="50" value="500" />
+            </div>
+            <label class="lv-switch">
+              <input id="view-follow" type="checkbox" />
+              <span class="lv-switch-track" aria-hidden="true"><i></i></span>
+              <span data-i18n="view.follow">跟随</span>
+            </label>
+            <button id="btn-view-copy" class="lv-btn lv-btn-ghost" type="button" data-i18n="action.copy">复制</button>
+            <button id="btn-reload" class="lv-btn lv-btn-ghost" type="button" data-i18n="action.reload">重载</button>
+            <button id="btn-download" class="lv-btn lv-btn-ghost" type="button" data-i18n="action.download">下载</button>
+          </div>
+          <div id="log-view" class="lv-stream lv-stream-drawer" tabindex="0"></div>
+          <div class="lv-statline"><span id="view-meta" class="lv-muted"></span></div>
+        </div>
       </div>
 
       <div id="toast" class="lv-toast" role="status" hidden></div>

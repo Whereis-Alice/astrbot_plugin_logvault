@@ -24,7 +24,7 @@ from .core.web_api import LogVaultWebApi
 
 
 PLUGIN_ID = "astrbot_plugin_logvault"
-PLUGIN_VERSION = "2.1.0"
+PLUGIN_VERSION = "2.2.0"
 LEGACY_PLUGIN_ID = "astrbot_plugin_logplus"
 LOG_LEVELS = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40, "CRITICAL": 50}
 ASTRBOT_PLUGIN_LOGGER_PREFIX = "astrbot.plugin."
@@ -426,7 +426,7 @@ class LogVaultPlugin(Star):
             logger.debug("LogVault 启动日志回填跳过: %s", exc)
 
     def capture_diagnostics(self) -> dict[str, Any]:
-        """Summarise the capture pipeline for /logvault status and the WebUI."""
+        """Summarise the capture pipeline for /log status and the WebUI."""
 
         capture = self.loguru_capture
         astrbot_logger = logging.getLogger("astrbot")
@@ -543,11 +543,15 @@ class LogVaultPlugin(Star):
             )
         self._attach_logging_handlers()
 
-    @filter.command_group("logvault", alias={"logplus"})
-    def logvault(self):
-        """LogVault commands; ``logplus`` remains a compatibility alias."""
+    @filter.command_group("log", alias={"logvault", "logplus"})
+    def log(self):
+        """LogVault commands.
 
-    @logvault.command("status")
+        ``log`` is the primary entry point; ``logvault`` and ``logplus`` stay
+        registered as aliases so existing muscle memory keeps working.
+        """
+
+    @log.command("status")
     async def cmd_status(self, event: AstrMessageEvent):
         """查看日志状态。"""
         if not self.command_handler:
@@ -557,7 +561,7 @@ class LogVaultPlugin(Star):
         yield event.plain_result(f"{status}\n\n{self._capture_summary()}")
 
     def _capture_summary(self) -> str:
-        """Human readable capture diagnostics appended to /logvault status."""
+        """Human readable capture diagnostics appended to /log status."""
 
         info = self.capture_diagnostics()
         mode_labels = {
@@ -593,7 +597,7 @@ class LogVaultPlugin(Star):
             lines.append(f"⚠️ {warning}")
         return "\n".join(lines)
 
-    @logvault.command("search")
+    @log.command("search")
     async def cmd_search(self, event: AstrMessageEvent, keyword: str = ""):
         """搜索当前及兼容旧目录中的日志。"""
         if not self.command_handler:
@@ -601,7 +605,7 @@ class LogVaultPlugin(Star):
             return
         yield event.plain_result(await self.command_handler.handle_search(keyword))
 
-    @logvault.command("clean")
+    @log.command("clean")
     async def cmd_clean(self, event: AstrMessageEvent):
         """手动清理已关闭的旧日志。"""
         if not self.command_handler:
@@ -609,7 +613,7 @@ class LogVaultPlugin(Star):
             return
         yield event.plain_result(await self.command_handler.handle_clean())
 
-    @logvault.command("export")
+    @log.command("export")
     async def cmd_export(self, event: AstrMessageEvent, days: str = ""):
         """导出最近指定天数的日志。"""
         if not self.command_handler:
@@ -619,7 +623,7 @@ class LogVaultPlugin(Star):
         # making AstrBot's argument parser raise a conversion error.
         yield event.plain_result(await self.command_handler.handle_export(days))
 
-    @logvault.command("help")
+    @log.command("help")
     async def cmd_help(self, event: AstrMessageEvent):
         """显示命令帮助。"""
         if not self.command_handler:
@@ -627,7 +631,7 @@ class LogVaultPlugin(Star):
             return
         yield event.plain_result(self.command_handler.handle_help())
 
-    @logvault.command("send")
+    @log.command("send")
     async def cmd_send(
         self,
         event: AstrMessageEvent,
@@ -642,9 +646,9 @@ class LogVaultPlugin(Star):
 
         usage = (
             "❌ 用法:\n"
-            "  /logvault send all [天数]\n"
-            "  /logvault send errors [天数]\n"
-            "  /logvault send plugin <插件名> [天数]"
+            "  /log send all [天数]\n"
+            "  /log send errors [天数]\n"
+            "  /log send plugin <插件名> [天数]"
         )
         # Every argument is declared as str on purpose: AstrBot converts an
         # int-annotated argument eagerly and raises on a non-numeric token,

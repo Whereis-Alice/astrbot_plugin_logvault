@@ -1,87 +1,233 @@
 {
   "metadata": {
     "display_name": "LogVault 日志中心",
-    "description": "分插件归档 AstrBot 日志，并在 Dashboard 中分类查看、跟随与清理。"
+    "description": "分插件归档 AstrBot 日志，并在 Dashboard 控制台中分类查看、实时跟随、搜索与清理。"
   },
   "pages": {
     "logs": {
-      "title": "日志中心",
-      "desc": "按来源与插件分类查看、跟随、下载和清理 AstrBot 日志。",
       "action": {
-        "refresh": "刷新",
-        "clean": "立即清理",
         "bundle": "下载 ZIP",
+        "clean": "立即清理",
+        "clearView": "清屏",
+        "close": "关闭",
+        "collapse": "收起",
+        "copy": "复制",
         "delete": "删除所选",
-        "reload": "重新加载",
-        "download": "下载"
+        "download": "下载",
+        "expand": "展开",
+        "recheck": "重新检测",
+        "refresh": "刷新",
+        "reload": "重载",
+        "search": "搜索",
+        "view": "查看"
+      },
+      "bundle": {
+        "all": "全部日志",
+        "days": "最近天数",
+        "done": "打包完成",
+        "errors": "仅错误日志",
+        "plugin": "指定插件",
+        "pluginName": "插件",
+        "scope": "范围",
+        "sliceOff": "按记录时间切片已关闭：只按文件修改时间筛选，命中的文件会整体打包。",
+        "sliceOn": "按记录时间切片已开启：打包时会逐行截取指定天数内的记录，跨天的汇总日志也能精确裁剪。",
+        "working": "正在打包，请稍候..."
+      },
+      "capture": {
+        "attached": "已挂载 logger",
+        "backfilled": "启动回填",
+        "forwarded": "已转发 / 丢弃",
+        "handlerLevel": "写入级别",
+        "logging": "logging 兼容模式",
+        "loguru": "loguru 全量捕获",
+        "pending": "初始化中",
+        "routes": "WebUI 接口",
+        "sourceLevel": "astrbot 生效级别",
+        "version": "插件版本"
+      },
+      "card": {
+        "bundle": "打包导出",
+        "capture": "采集通路",
+        "dist": "分类占用",
+        "sources": "日志来源"
+      },
+      "common": {
+        "off": "未接入",
+        "on": "已接入"
+      },
+      "confirm": {
+        "clean": "立即执行压缩与清理？超期日志会被删除。",
+        "delete": "确认删除选中的日志文件？该操作不可恢复。"
+      },
+      "density": {
+        "compact": "紧凑",
+        "cozy": "宽松",
+        "hint": "切换行高"
+      },
+      "desc": "采集诊断、实时日志流、分类归档与安全导出",
+      "diag": {
+        "loggers": "已挂载 logger",
+        "loguru": "loguru sink",
+        "mode": "采集模式",
+        "noLoggers": "loguru 模式下无需挂载 logging handler",
+        "noRoutes": "未注册任何接口",
+        "pipeline": "采集链路",
+        "routes": "WebUI 接口",
+        "tips": "排查建议"
+      },
+      "dist": {
+        "empty": "暂无日志",
+        "rest": "其他"
+      },
+      "error": {
+        "request": "请求失败"
+      },
+      "files": {
+        "categories": "分类",
+        "checkAll": "全选",
+        "colCategory": "分类",
+        "colFile": "文件",
+        "colSize": "大小",
+        "colTime": "修改时间",
+        "empty": "该分类下没有日志文件",
+        "none": "未选择分类",
+        "pick": "请选择左侧分类",
+        "sort": "排序",
+        "sortMtime": "按时间",
+        "sortName": "按名称",
+        "sortSize": "按大小"
+      },
+      "kind": {
+        "all": "全部",
+        "builtin": "内置分类",
+        "other": "其他",
+        "plugin": "插件日志"
+      },
+      "live": {
+        "allLevels": "全部级别",
+        "allTags": "全部来源",
+        "file": "跟随文件",
+        "follow": "实时跟随",
+        "keyword": "关键词",
+        "level": "级别",
+        "noFile": "暂无可跟随文件",
+        "paused": "已暂停",
+        "polling": "每 2 秒增量拉取",
+        "shown": "当前展示",
+        "tag": "来源标签"
+      },
+      "meta": {
+        "clipped": "仅渲染最后 2000 行",
+        "compressed": "压缩文件不支持实时跟随",
+        "matched": "命中行",
+        "scanned": "扫描行",
+        "shown": "显示",
+        "size": "大小",
+        "truncated": "已达扫描上限，仅显示部分内容"
       },
       "placeholder": {
         "category": "过滤分类",
         "file": "过滤文件名",
-        "keyword": "关键词"
+        "liveKeyword": "搜索日志内容",
+        "plugin": "插件名",
+        "search": "跨来源搜索全部日志",
+        "viewKeyword": "过滤行"
+      },
+      "search": {
+        "empty": "没有命中的日志行",
+        "keyword": "关键词",
+        "limit": "条数上限",
+        "result": "命中",
+        "working": "正在搜索..."
+      },
+      "skin": {
+        "auto": "跟随 Dashboard",
+        "console": "深空控制台",
+        "daylight": "明昼",
+        "glass": "玻璃荧光",
+        "label": "皮肤",
+        "matrix": "终端绿",
+        "synthwave": "赛博霓虹"
+      },
+      "sources": {
+        "empty": "暂无可读来源"
       },
       "stats": {
-        "files": "文件数",
-        "size": "占用",
-        "compressed": "已压缩",
-        "newest": "最新",
-        "oldest": "最旧",
-        "mode": "捕获模式",
-        "handlerLevel": "写入级别",
-        "sourceLevel": "AstrBot 级别",
-        "forwarded": "已转发",
-        "dropped": "丢弃",
+        "attached": "已挂载 logger",
         "backfilled": "启动回填",
+        "compressed": "已压缩",
+        "dropped": "丢弃",
+        "files": "日志文件",
+        "forwarded": "已转发",
+        "handlerLevel": "写入级别",
+        "installed": "已安装插件",
+        "mode": "采集模式",
+        "newest": "最新",
         "pluginLoggers": "插件日志器",
-        "version": "版本",
-        "slice": "按记录时间切片",
-        "warning": "提示",
-        "dataDir": "数据目录"
+        "size": "占用空间"
       },
-      "common": {
-        "off": "关闭"
+      "status": {
+        "loading": "正在加载...",
+        "refreshed": "刷新于",
+        "tab": "当前页"
       },
-      "tree": {
-        "empty": "没有匹配的分类"
+      "stream": {
+        "empty": "没有匹配的日志行"
       },
-      "files": {
-        "empty": "该分类下没有日志文件",
-        "pick": "请选择左侧分类。",
-        "none": "未选择分类",
-        "unit": "个文件"
+      "tab": {
+        "diag": "采集诊断",
+        "files": "日志文件",
+        "live": "实时日志",
+        "overview": "运行总览",
+        "search": "全局搜索"
       },
       "tag": {
         "active": "写入中"
       },
-      "meta": {
-        "matched": "命中行",
-        "scanned": "扫描行",
-        "size": "大小",
-        "mtime": "修改时间",
-        "truncated": "已达扫描上限，仅显示部分内容",
-        "compressed": "压缩文件不支持实时跟随"
+      "tip": {
+        "dropped": "存在被丢弃的记录，请检查数据目录是否可写、磁盘是否已满。",
+        "healthy": "采集链路正常，未发现问题。",
+        "level": "astrbot 生效级别不是 DEBUG，低于该级别的日志在到达 LogVault 之前就被丢弃了。",
+        "loguru": "当前不是 loguru 模式：AstrBot 的控制台输出可能只有部分被记录，建议升级 AstrBot 或检查 loguru 是否可导入。"
       },
-      "bundle": {
-        "working": "正在打包...",
-        "done": "打包完成"
-      },
-      "confirm": {
-        "delete": "确认删除选中的日志文件？此操作不可恢复。",
-        "clean": "立即执行压缩与过期清理？"
-      },
+      "title": "LogVault 控制台",
       "toast": {
-        "refreshed": "已刷新",
-        "deleted": "已删除",
-        "skipped": "跳过",
-        "cleaned": "清理完成",
+        "bundled": "已开始下载压缩包",
         "compressed": "压缩",
-        "removed": "删除",
-        "rotated": "日志已轮换，视图已重置",
+        "copied": "已复制到剪贴板",
+        "copyFailed": "复制失败，请手动选择文本",
+        "deleted": "已删除",
         "followUnsupported": "该文件不支持实时跟随",
-        "needPlugin": "请填写插件名"
+        "freed": "释放",
+        "liveLoaded": "已载入日志尾部",
+        "needKeyword": "请输入搜索关键词",
+        "needPlugin": "请填写插件名",
+        "nothingToCopy": "没有可复制的内容",
+        "refreshed": "已刷新",
+        "rotated": "日志已轮换，视图已重置",
+        "skipped": "跳过"
       },
-      "error": {
-        "request": "请求失败"
+      "tree": {
+        "empty": "没有匹配的分类"
+      },
+      "unit": {
+        "file": "个",
+        "line": "行",
+        "source": "个来源"
+      },
+      "view": {
+        "follow": "跟随",
+        "keyword": "关键词",
+        "level": "级别",
+        "none": "未打开文件",
+        "tail": "行数"
+      },
+      "warn": {
+        "dropped": "有日志被丢弃，通常是磁盘写入失败或过滤过严",
+        "mode": "采集通路尚未就绪，请查看采集诊断页",
+        "routes": "WebUI 接口未注册，当前 AstrBot 版本可能过旧",
+        "slice": "按记录时间切片已关闭：导出天数只按文件修改时间筛选，跨天的汇总日志会整体打包",
+        "title": "需要注意"
       }
     }
   }

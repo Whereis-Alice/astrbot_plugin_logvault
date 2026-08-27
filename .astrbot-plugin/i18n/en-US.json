@@ -1,87 +1,233 @@
 {
   "metadata": {
-    "display_name": "LogVault Log Center",
-    "description": "Archive AstrBot logs per plugin and browse, follow and clean them from the dashboard."
+    "display_name": "LogVault",
+    "description": "Archives AstrBot logs per plugin and offers a dashboard console to browse, follow, search and clean them."
   },
   "pages": {
     "logs": {
-      "title": "Log Center",
-      "desc": "Browse, follow, download and clean AstrBot logs grouped by source and plugin.",
       "action": {
-        "refresh": "Refresh",
-        "clean": "Clean now",
         "bundle": "Download ZIP",
+        "clean": "Clean now",
+        "clearView": "Clear",
+        "close": "Close",
+        "collapse": "Collapse",
+        "copy": "Copy",
         "delete": "Delete selected",
+        "download": "Download",
+        "expand": "Expand",
+        "recheck": "Re-check",
+        "refresh": "Refresh",
         "reload": "Reload",
-        "download": "Download"
+        "search": "Search",
+        "view": "View"
+      },
+      "bundle": {
+        "all": "All logs",
+        "days": "Recent days",
+        "done": "Archive ready",
+        "errors": "Errors only",
+        "plugin": "Single plugin",
+        "pluginName": "Plugin",
+        "scope": "Scope",
+        "sliceOff": "Record-time slicing is off: only file mtime is used, so matching files are archived whole.",
+        "sliceOn": "Record-time slicing is on: records inside the requested window are cut line by line, so multi-day aggregate logs are trimmed precisely.",
+        "working": "Building the archive..."
+      },
+      "capture": {
+        "attached": "Attached loggers",
+        "backfilled": "Backfilled at startup",
+        "forwarded": "Forwarded / dropped",
+        "handlerLevel": "Write level",
+        "logging": "logging compatibility mode",
+        "loguru": "loguru full capture",
+        "pending": "Initializing",
+        "routes": "Web API routes",
+        "sourceLevel": "astrbot effective level",
+        "version": "Plugin version"
+      },
+      "card": {
+        "bundle": "Export archive",
+        "capture": "Capture pipeline",
+        "dist": "Category usage",
+        "sources": "Log sources"
+      },
+      "common": {
+        "off": "not attached",
+        "on": "attached"
+      },
+      "confirm": {
+        "clean": "Run compression and cleanup now? Expired logs will be deleted.",
+        "delete": "Delete the selected log files? This cannot be undone."
+      },
+      "density": {
+        "compact": "Compact",
+        "cozy": "Cozy",
+        "hint": "Toggle row height"
+      },
+      "desc": "Capture diagnostics, live log stream, categorized archive and safe export",
+      "diag": {
+        "loggers": "Attached loggers",
+        "loguru": "loguru sink",
+        "mode": "Capture mode",
+        "noLoggers": "No logging handler is needed in loguru mode",
+        "noRoutes": "No route registered",
+        "pipeline": "Capture pipeline",
+        "routes": "Web API routes",
+        "tips": "Troubleshooting"
+      },
+      "dist": {
+        "empty": "No logs yet",
+        "rest": "Others"
+      },
+      "error": {
+        "request": "Request failed"
+      },
+      "files": {
+        "categories": "Categories",
+        "checkAll": "Select all",
+        "colCategory": "Category",
+        "colFile": "File",
+        "colSize": "Size",
+        "colTime": "Modified",
+        "empty": "No log file in this category",
+        "none": "No category selected",
+        "pick": "Pick a category on the left",
+        "sort": "Sort",
+        "sortMtime": "By time",
+        "sortName": "By name",
+        "sortSize": "By size"
+      },
+      "kind": {
+        "all": "All",
+        "builtin": "Built-in",
+        "other": "Others",
+        "plugin": "Plugin logs"
+      },
+      "live": {
+        "allLevels": "All levels",
+        "allTags": "All tags",
+        "file": "Follow file",
+        "follow": "Follow",
+        "keyword": "Keyword",
+        "level": "Level",
+        "noFile": "No followable file",
+        "paused": "Paused",
+        "polling": "Polling every 2s",
+        "shown": "Showing",
+        "tag": "Source tag"
+      },
+      "meta": {
+        "clipped": "only the last 2000 lines are rendered",
+        "compressed": "compressed files cannot be followed",
+        "matched": "Matched",
+        "scanned": "Scanned",
+        "shown": "Shown",
+        "size": "Size",
+        "truncated": "Scan limit reached, showing partial content"
       },
       "placeholder": {
         "category": "Filter categories",
         "file": "Filter file names",
-        "keyword": "Keyword"
+        "liveKeyword": "Search log content",
+        "plugin": "Plugin name",
+        "search": "Search every source",
+        "viewKeyword": "Filter lines"
+      },
+      "search": {
+        "empty": "No matching log line",
+        "keyword": "Keyword",
+        "limit": "Max results",
+        "result": "Matched",
+        "working": "Searching..."
+      },
+      "skin": {
+        "auto": "Follow Dashboard",
+        "console": "Deep Console",
+        "daylight": "Daylight",
+        "glass": "Glass Neon",
+        "label": "Skin",
+        "matrix": "Terminal Green",
+        "synthwave": "Synthwave"
+      },
+      "sources": {
+        "empty": "No readable source"
       },
       "stats": {
-        "files": "Files",
-        "size": "Size",
-        "compressed": "Compressed",
-        "newest": "Newest",
-        "oldest": "Oldest",
-        "mode": "Capture mode",
-        "handlerLevel": "Writer level",
-        "sourceLevel": "AstrBot level",
-        "forwarded": "Forwarded",
-        "dropped": "Dropped",
+        "attached": "Attached loggers",
         "backfilled": "Backfilled",
+        "compressed": "Compressed",
+        "dropped": "Dropped",
+        "files": "Log files",
+        "forwarded": "Forwarded",
+        "handlerLevel": "Write level",
+        "installed": "Installed plugins",
+        "mode": "Capture mode",
+        "newest": "Newest",
         "pluginLoggers": "Plugin loggers",
-        "version": "Version",
-        "slice": "Slice by record time",
-        "warning": "Notice",
-        "dataDir": "Data dir"
+        "size": "Disk usage"
       },
-      "common": {
-        "off": "off"
+      "status": {
+        "loading": "Loading...",
+        "refreshed": "refreshed at",
+        "tab": "Tab"
       },
-      "tree": {
-        "empty": "No matching category"
+      "stream": {
+        "empty": "No matching log line"
       },
-      "files": {
-        "empty": "No log file in this category",
-        "pick": "Pick a category on the left.",
-        "none": "No category selected",
-        "unit": "files"
+      "tab": {
+        "diag": "Diagnostics",
+        "files": "Log files",
+        "live": "Live stream",
+        "overview": "Overview",
+        "search": "Search"
       },
       "tag": {
         "active": "writing"
       },
-      "meta": {
-        "matched": "Matched",
-        "scanned": "Scanned",
-        "size": "Size",
-        "mtime": "Modified",
-        "truncated": "Scan limit reached, showing partial content",
-        "compressed": "Compressed files cannot be followed live"
+      "tip": {
+        "dropped": "Some records were dropped. Check that the data directory is writable and the disk is not full.",
+        "healthy": "The capture pipeline looks healthy.",
+        "level": "The astrbot effective level is not DEBUG, so anything below it is dropped before reaching LogVault.",
+        "loguru": "Not running in loguru mode: only part of the AstrBot console output may be recorded. Upgrade AstrBot or check that loguru is importable."
       },
-      "bundle": {
-        "working": "Building archive...",
-        "done": "Archive ready"
-      },
-      "confirm": {
-        "delete": "Delete the selected log files? This cannot be undone.",
-        "clean": "Run compression and retention cleanup now?"
-      },
+      "title": "LogVault Console",
       "toast": {
-        "refreshed": "Refreshed",
+        "bundled": "Archive download started",
+        "compressed": "Compressed",
+        "copied": "Copied to clipboard",
+        "copyFailed": "Copy failed, please select the text manually",
         "deleted": "Deleted",
-        "skipped": "Skipped",
-        "cleaned": "Cleanup finished",
-        "compressed": "compressed",
-        "removed": "removed",
-        "rotated": "Log rotated, view reset",
-        "followUnsupported": "This file cannot be followed live",
-        "needPlugin": "Please enter a plugin name"
+        "followUnsupported": "This file cannot be followed",
+        "freed": "Freed",
+        "liveLoaded": "Loaded the log tail",
+        "needKeyword": "Enter a search keyword",
+        "needPlugin": "Enter a plugin name",
+        "nothingToCopy": "Nothing to copy",
+        "refreshed": "Refreshed",
+        "rotated": "Log rotated, the view was reset",
+        "skipped": "Skipped"
       },
-      "error": {
-        "request": "Request failed"
+      "tree": {
+        "empty": "No matching category"
+      },
+      "unit": {
+        "file": "files",
+        "line": "lines",
+        "source": "sources"
+      },
+      "view": {
+        "follow": "Follow",
+        "keyword": "Keyword",
+        "level": "Level",
+        "none": "No file opened",
+        "tail": "Lines"
+      },
+      "warn": {
+        "dropped": "Some logs were dropped, usually a disk write failure or an over-strict filter",
+        "mode": "The capture pipeline is not ready yet, open the diagnostics tab",
+        "routes": "Web API routes are not registered, this AstrBot build may be too old",
+        "slice": "Record-time slicing is off: the day range only filters by file mtime, so multi-day aggregate logs are archived whole",
+        "title": "Needs attention"
       }
     }
   }

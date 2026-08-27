@@ -13,7 +13,7 @@ LogVault 为 AstrBot 提供完整的日志留存能力：捕获、分类、轮�
 - **轮换与压缩**。按大小或时间轮换，只压缩已经关闭的归档文件，活动日志永不被清理任务删除。
 - **按记录时间导出**。天数按每行日志自身的时间戳裁剪，持续写入的 `all.log` 也能只导出指定范围。
 - **敏感信息脱敏**。token、password、secret 等键值在写入副本、WebUI 返回和导出包中统一遮蔽。
-- **WebUI 日志中心**。分类浏览、级别过滤、实时跟随、搜索、下载、打包与清理。
+- **WebUI 日志中心**。五页签控制台，六套皮肤（含玻璃荧光）：分类浏览、级别过滤、实时跟随、搜索、下载、打包与清理。
 - **只读兼容历史目录**。旧版 `astrbot_plugin_logplus` 数据目录与自定义历史目录参与搜索和导出，但不会被修改。
 - **无第三方依赖**。`requirements.txt` 为空。
 
@@ -22,31 +22,31 @@ LogVault 为 AstrBot 提供完整的日志留存能力：捕获、分类、轮�
 1. 把 `astrbot_plugin_logvault` 文件夹放入 AstrBot 的 `data/plugins/` 目录。
 2. 重启 AstrBot，或在 WebUI 中重新加载插件。
 3. 在插件配置中确认日志级别、保留策略与脱敏设置。
-4. 执行 `/logvault status`，确认捕获模式与生效级别符合预期。
+4. 执行 `/log status`，确认捕获模式与生效级别符合预期。
 
-建议先停用旧的 `astrbot_plugin_logplus` 再启用 LogVault。两者数据目录不同，但都会注册 `/logplus`，同时启用时命令归属取决于 AstrBot 的注册顺序。LogVault 无冲突的主命令是 `/logvault`。
+建议先停用旧的 `astrbot_plugin_logplus` 再启用 LogVault。两者数据目录不同，但都会注册 `/logplus`，同时启用时命令归属取决于 AstrBot 的注册顺序。LogVault 无冲突的主命令是 `/log`。
 
 ## 命令
 
-`/logvault` 是主命令组，`/logplus` 是兼容别名，两种前缀等价。
+`/log` 是主命令组，`/logvault` 与 `/logplus` 是兼容别名，三种前缀等价。
 
 ```text
-/logvault status                    查看日志状态与捕获诊断
-/logvault search <关键词>            搜索日志
-/logvault export [天数]              导出最近 N 天日志（默认 7 天）
-/logvault clean                     手动清理旧日志
-/logvault help                      显示帮助
+/log status                    查看日志状态与捕获诊断
+/log search <关键词>            搜索日志
+/log export [天数]              导出最近 N 天日志（默认 7 天）
+/log clean                     手动清理旧日志
+/log help                      显示帮助
 
-/logvault send all [天数]            发送最近 N 天全部日志
-/logvault send errors [天数]         发送最近 N 天错误日志
-/logvault send plugin <插件名> [天数] 发送指定插件最近 N 天日志
+/log send all [天数]            发送最近 N 天全部日志
+/log send errors [天数]         发送最近 N 天错误日志
+/log send plugin <插件名> [天数] 发送指定插件最近 N 天日志
 ```
 
 示例：
 
 ```text
-/logvault send all 1
-/logplus send plugin dynamic_card_plus 3
+/log send all 1
+/log send plugin dynamic_card_plus 3
 /logvault export 14
 ```
 
@@ -56,12 +56,17 @@ LogVault 为 AstrBot 提供完整的日志留存能力：捕获、分类、轮�
 
 入口：**Dashboard → 插件 → LogVault → 日志中心**。
 
-- **分类树**：按 全部 / Core / 错误 / 各插件 分组，并标注每个来源是当前数据目录、只读历史目录还是 AstrBot 共享日志目录。
-- **文件列表**：大小、修改时间、是否压缩、是否可删除。活动 `.log` 与共享日志目录受保护，不可删除。
-- **内容查看**：按级别过滤（DEBUG / INFO / WARNING / ERROR / CRITICAL），行级着色，内容按 `sensitive_keywords` 脱敏后返回。
-- **实时跟随**：2 秒增量拉取活动日志，切换到其他标签页时自动暂停，检测到文件轮换会重置视图。压缩文件不支持跟随。
-- **搜索**：跨来源关键词搜索，带扫描行数上限保护。
-- **管理**：单文件下载、按天数打包下载、批量删除归档日志、手动触发清理。
+五个页签：
+
+- **运行总览**：指标卡、采集链路、来源清单、分类占用占比、打包下载。
+- **实时日志**：2 秒增量跟随，支持级别、来源标签与关键词过滤，可暂停、复制、清屏；渲染上限 2000 行。压缩文件不支持跟随。
+- **日志文件**：来源 → 分类两级树，列出大小、修改时间、是否压缩、是否可删除；点击文件从右侧抽屉打开查看器，可按级别与关键词过滤、跟随、复制、下载。活动 `.log` 与共享日志目录受保护，不可删除。
+- **全局搜索**：跨来源关键词搜索，带扫描行数上限保护，结果可直接跳到对应文件。
+- **采集诊断**：捕获模式、写入级别与上游生效级别、已挂载 logger、已注册接口、转发与丢弃计数、排查建议。
+
+皮肤：跟随 Dashboard、深空控制台、明昼、玻璃荧光、赛博霓虹、终端绿，另有紧凑 / 宽松两种密度。选择保存在浏览器本地。
+
+返回内容按 `sensitive_keywords` 脱敏。
 
 鉴权沿用 AstrBot Dashboard 自身的登录校验与插件 scope，插件不额外实现认证，页面只在已登录的 Dashboard 会话内可访问。后端接口注册在 `/astrbot_plugin_logvault/<接口名>` 下。如果运行的 AstrBot 版本不支持插件页面，注册会安静跳过，插件其余功能照常工作。
 
@@ -151,7 +156,7 @@ data/plugin_data/astrbot_plugin_logvault/
 
 按顺序检查：
 
-1. 执行 `/logvault status`，查看「日志捕获」段落。
+1. 执行 `/log status`，查看「日志捕获」段落。
 2. 模式显示为兼容模式而你期望全量捕获 → loguru sink 注册失败，诊断中的警告会说明原因。
 3. `astrbot 生效级别` 高于 `写入级别`（例如生效 INFO、写入 DEBUG）→ 低级别记录在源头被丢弃，开启 `force_source_debug`，或直接调低 AstrBot 控制台级别。
 4. 缺的是插件加载完成之前那一段 → 确认 `backfill_startup_logs` 已开启，必要时提高 `backfill_limit`。

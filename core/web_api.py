@@ -251,7 +251,7 @@ class LogVaultWebApi:
         )
 
     async def bundle(self):
-        """Build the same archive as /logvault send and stream it back."""
+        """Build the same archive as /log send and stream it back."""
 
         commands = self.commands
         if commands is None:

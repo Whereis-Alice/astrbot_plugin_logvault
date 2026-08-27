@@ -1,8 +1,26 @@
-// LogVault dashboard page.  Renders the log catalog, viewer and maintenance
-// actions on top of the plugin Web API registered by core/web_api.py.
+// LogVault console (v2.2.0)
+// A tab based operations console for the plugin Web API in core/web_api.py.
+// Layout rules: every flex/grid child sets min-width:0 in style.css, so long
+// paths, plugin names and warnings truncate instead of stretching the page.
 
 const bridge = window.AstrBotPluginPage;
 
+const SKINS = [
+  { id: "auto", label: "跟随 Dashboard" },
+  { id: "console", label: "深空控制台" },
+  { id: "daylight", label: "明昼" },
+  { id: "glass", label: "玻璃荧光" },
+  { id: "synthwave", label: "赛博霓虹" },
+  { id: "matrix", label: "终端绿" },
+];
+const SKIN_IDS = SKINS.map((item) => item.id);
+const STORE_SKIN = "logvault.skin";
+const STORE_DENSITY = "logvault.density";
+const STORE_TAB = "logvault.tab";
+const TABS = ["overview", "live", "files", "search", "diag"];
+
+const LINE_RE =
+  /^\[(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})[^\]]*\]\s*\[([A-Za-z]+)\s*\]\s*\[([^\]]*)\]\s*(?:\[([^\]]*)\])?\s*:?\s*([\s\S]*)$/;
 const LEVEL_RE = /\[(DEBUG|INFO|WARN|WARNING|ERROR|CRITICAL|SUCCESS|TRACE|D|I|W|E|C)\s*\]/;
 const LEVEL_ALIASES = {
   D: "DEBUG",
@@ -13,30 +31,42 @@ const LEVEL_ALIASES = {
   C: "CRITICAL",
   TRACE: "DEBUG",
 };
+const LEVEL_RANK = { DEBUG: 10, INFO: 20, SUCCESS: 25, WARNING: 30, ERROR: 40, CRITICAL: 50 };
 const KIND_ORDER = { all: 0, builtin: 1, plugin: 2, other: 3 };
+const KIND_LABELS = {
+  all: "全部",
+  builtin: "内置分类",
+  plugin: "插件日志",
+  other: "其他",
+};
 const SOURCE_LABELS = {
   current: "当前数据目录",
   legacy: "旧数据目录",
   host: "AstrBot 主日志目录",
 };
 const FOLLOW_INTERVAL_MS = 2000;
+const MAX_STREAM_LINES = 2000;
 
 const state = {
+  tab: "overview",
+  skin: "console",
+  density: "compact",
   overview: null,
+  capture: null,
   categories: [],
   files: [],
   category: null,
   selected: new Set(),
-  file: null,
-  position: 0,
-  followTimer: null,
+  sort: "mtime",
+  allFiles: [],
+  live: { id: "", position: 0, entries: [], timer: null, busy: false, dropped: 0 },
+  view: { file: null, position: 0, entries: [], timer: null, busy: false },
   toastTimer: null,
-  busy: false,
 };
 
 const el = (id) => document.getElementById(id);
 
-// -- small helpers ---------------------------------------------------------
+// -- helpers ---------------------------------------------------------------
 
 function t(key, fallback) {
   try {
@@ -53,6 +83,26 @@ function esc(value) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+function highlight(text, keyword) {
+  const raw = String(text === undefined || text === null ? "" : text);
+  const needle = String(keyword || "").toLowerCase();
+  if (!needle) return esc(raw);
+  const hay = raw.toLowerCase();
+  let out = "";
+  let from = 0;
+  let at = hay.indexOf(needle, from);
+  while (at !== -1) {
+    out +=
+      esc(raw.slice(from, at)) +
+      "<mark>" +
+      esc(raw.slice(at, at + needle.length)) +
+      "</mark>";
+    from = at + needle.length;
+    at = hay.indexOf(needle, from);
+  }
+  return out + esc(raw.slice(from));
 }
 
 function formatSize(bytes) {
@@ -78,19 +128,36 @@ function formatTime(epochSeconds) {
   }
 }
 
-function lineLevel(line) {
-  const match = LEVEL_RE.exec(String(line).slice(0, 160));
-  if (!match) return "";
-  const token = match[1].toUpperCase();
-  return LEVEL_ALIASES[token] || token;
+function debounce(fn, wait) {
+  let timer = null;
+  return function debounced() {
+    if (timer) window.clearTimeout(timer);
+    timer = window.setTimeout(fn, wait);
+  };
+}
+
+function readStore(key, fallback) {
+  try {
+    const value = window.localStorage.getItem(key);
+    return value === null || value === "" ? fallback : value;
+  } catch (err) {
+    return fallback;
+  }
+}
+
+function writeStore(key, value) {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch (err) {
+    /* private mode or storage disabled: skin simply is not remembered */
+  }
 }
 
 function toast(message, kind) {
   const node = el("toast");
   if (!node) return;
   node.textContent = String(message);
-  if (kind === "error") node.dataset.kind = "error";
-  else delete node.dataset.kind;
+  node.dataset.kind = kind === "error" ? "err" : "ok";
   node.hidden = false;
   if (state.toastTimer) window.clearTimeout(state.toastTimer);
   state.toastTimer = window.setTimeout(() => {
@@ -129,22 +196,241 @@ function asList(payload, key) {
 }
 
 function sourceLabel(source, kind) {
-  const base = SOURCE_LABELS[kind] || source;
-  if (kind === "host" || kind === "legacy") return base + " (" + source + ")";
-  return base;
+  const known = SOURCE_LABELS[kind] || SOURCE_LABELS[source];
+  if (!known) return String(source || "-");
+  if (kind === "host" || kind === "legacy") return known + " (" + source + ")";
+  return known;
 }
 
-// -- rendering -------------------------------------------------------------
+function kindLabel(kind) {
+  return t("kind." + kind, KIND_LABELS[kind] || kind || "-");
+}
 
-function chip(label, value, warn) {
+function lineLevel(line) {
+  const match = LEVEL_RE.exec(String(line).slice(0, 160));
+  if (!match) return "";
+  const token = match[1].toUpperCase();
+  return LEVEL_ALIASES[token] || token;
+}
+
+// Split one formatted record into its columns so the stream can render a
+// terminal-like grid; unparsable lines fall back to a single raw cell.
+function parseLine(line) {
+  const raw = String(line === undefined || line === null ? "" : line);
+  const match = LINE_RE.exec(raw);
+  if (!match) {
+    const level = lineLevel(raw);
+    return { raw, level, time: "", tag: "", where: "", message: raw, parsed: false };
+  }
+  const token = String(match[2] || "").toUpperCase();
+  return {
+    raw,
+    level: LEVEL_ALIASES[token] || token,
+    time: match[1] || "",
+    tag: match[3] || "",
+    where: match[4] || "",
+    message: match[5] || "",
+    parsed: true,
+  };
+}
+
+function toEntries(lines) {
+  return (Array.isArray(lines) ? lines : []).map(parseLine);
+}
+
+// -- skin + density --------------------------------------------------------
+
+function isDarkContext() {
+  try {
+    const context = bridge.getContext ? bridge.getContext() : null;
+    if (context && typeof context.isDark === "boolean") return context.isDark;
+  } catch (err) {
+    /* fall through to the media query */
+  }
+  try {
+    return window.matchMedia("(prefers-color-scheme: dark)").matches;
+  } catch (err) {
+    return true;
+  }
+}
+
+function applySkin() {
+  const effective =
+    state.skin === "auto" ? (isDarkContext() ? "console" : "daylight") : state.skin;
+  document.documentElement.dataset.skin = effective;
+  const select = el("skin-select");
+  if (select && select.value !== state.skin) select.value = state.skin;
+}
+
+function setSkin(id) {
+  state.skin = SKIN_IDS.indexOf(id) === -1 ? "console" : id;
+  writeStore(STORE_SKIN, state.skin);
+  applySkin();
+}
+
+function buildSkinOptions() {
+  const select = el("skin-select");
+  if (!select) return;
+  select.innerHTML = SKINS.map(
+    (item) =>
+      "<option value=\"" + esc(item.id) + "\">" +
+      esc(t("skin." + item.id, item.label)) +
+      "</option>"
+  ).join("");
+  select.value = state.skin;
+}
+
+function applyDensity() {
+  document.documentElement.dataset.density = state.density;
+  const button = el("btn-density");
+  if (button) {
+    button.textContent =
+      state.density === "compact"
+        ? t("density.compact", "紧凑")
+        : t("density.cozy", "宽松");
+    button.title = t("density.hint", "切换行高");
+  }
+}
+
+function toggleDensity() {
+  state.density = state.density === "compact" ? "cozy" : "compact";
+  writeStore(STORE_DENSITY, state.density);
+  applyDensity();
+}
+
+// -- tabs ------------------------------------------------------------------
+
+function setTab(name) {
+  const tab = TABS.indexOf(name) === -1 ? "overview" : name;
+  state.tab = tab;
+  writeStore(STORE_TAB, tab);
+  for (const button of document.querySelectorAll(".lv-tab")) {
+    const active = button.dataset.tab === tab;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+  }
+  for (const panel of document.querySelectorAll(".lv-panel")) {
+    const active = panel.id === "panel-" + tab;
+    panel.hidden = !active;
+    panel.classList.toggle("is-active", active);
+  }
+  if (tab === "live") startLive();
+  else stopLive();
+  if (tab === "diag" && !state.capture) loadDiagnostics();
+  updateStatusBar();
+}
+
+// -- shared stream renderer ------------------------------------------------
+
+function levelPasses(entry, minimum) {
+  if (!minimum) return true;
+  const floor = LEVEL_RANK[minimum] || 0;
+  const rank = LEVEL_RANK[entry.level] || 0;
+  if (!rank) return floor <= 0;
+  return rank >= floor;
+}
+
+function entryPasses(entry, filter) {
+  if (!levelPasses(entry, filter.level)) return false;
+  if (filter.tag && entry.tag !== filter.tag) return false;
+  if (filter.keyword) {
+    if (entry.raw.toLowerCase().indexOf(filter.keyword.toLowerCase()) === -1) return false;
+  }
+  return true;
+}
+
+function entryHtml(entry, keyword) {
+  if (!entry.parsed) {
+    return (
+      '<div class="lv-line lv-line-raw"' +
+      (entry.level ? ' data-level="' + esc(entry.level) + '"' : "") +
+      '><span class="lv-msg">' +
+      highlight(entry.raw, keyword) +
+      "</span></div>"
+    );
+  }
+  const where = entry.where
+    ? '<span class="lv-src">' + esc(entry.where) + "</span>"
+    : '<span class="lv-src"></span>';
   return (
-    '<span class="lv-chip' + (warn ? " lv-chip-warn" : "") + '">' +
-    esc(label) + ": <strong>" + esc(value) + "</strong></span>"
+    '<div class="lv-line" data-level="' + esc(entry.level || "") + '">' +
+    '<span class="lv-time">' + esc(entry.time.slice(11) || entry.time) + "</span>" +
+    '<span class="lv-lvl">' + esc(entry.level || "-") + "</span>" +
+    '<span class="lv-tag" title="' + esc(entry.tag) + '">' + esc(entry.tag) + "</span>" +
+    '<span class="lv-msg">' + highlight(entry.message, keyword) + where + "</span>" +
+    "</div>"
   );
 }
 
-function renderStats() {
-  const node = el("stats");
+// Renders at most MAX_STREAM_LINES rows: a 200k line file must never freeze
+// the dashboard tab.
+function renderStream(node, entries, filter) {
+  if (!node) return { shown: 0, total: 0, clipped: false };
+  const total = entries.length;
+  const matched = [];
+  for (const entry of entries) {
+    if (entryPasses(entry, filter)) matched.push(entry);
+  }
+  const clipped = matched.length > MAX_STREAM_LINES;
+  const visible = clipped ? matched.slice(matched.length - MAX_STREAM_LINES) : matched;
+  const atBottom = node.scrollTop + node.clientHeight >= node.scrollHeight - 24;
+  node.innerHTML = visible.length
+    ? visible.map((entry) => entryHtml(entry, filter.keyword)).join("")
+    : '<p class="lv-empty">' + esc(t("stream.empty", "没有匹配的日志行")) + "</p>";
+  if (filter.follow !== false && (atBottom || filter.jump)) node.scrollTop = node.scrollHeight;
+  return { shown: visible.length, total, clipped, matched: matched.length };
+}
+
+function pushEntries(bucket, lines) {
+  const added = toEntries(lines);
+  if (!added.length) return 0;
+  bucket.push.apply(bucket, added);
+  // Keep a bounded ring buffer so a long follow session cannot grow forever.
+  const overflow = bucket.length - MAX_STREAM_LINES * 3;
+  if (overflow > 0) bucket.splice(0, overflow);
+  return added.length;
+}
+
+// -- overview --------------------------------------------------------------
+
+function metricHtml(label, value, sub, kind) {
+  return (
+    '<dl class="lv-metric"' + (kind ? ' data-kind="' + esc(kind) + '"' : "") + ">" +
+    "<dt>" + esc(label) + "</dt>" +
+    "<dd>" + esc(value) +
+    (sub ? '<span class="lv-metric-sub">' + esc(sub) + "</span>" : "") +
+    "</dd></dl>"
+  );
+}
+
+function kvHtml(rows) {
+  if (!rows.length) return '<p class="lv-empty">-</p>';
+  return (
+    '<dl class="lv-kv">' +
+    rows
+      .map((row) => "<dt>" + esc(row[0]) + "</dt><dd>" + esc(row[1]) + "</dd>")
+      .join("") +
+    "</dl>"
+  );
+}
+
+function captureMode(capture) {
+  const mode = (capture && capture.mode) || "unknown";
+  const labels = {
+    loguru: t("capture.loguru", "loguru 全量捕获"),
+    logging: t("capture.logging", "logging 兼容模式"),
+    pending: t("capture.pending", "初始化中"),
+  };
+  const healthy = mode === "loguru";
+  return {
+    mode,
+    text: labels[mode] || mode,
+    kind: healthy ? "ok" : mode === "logging" ? "warn" : "err",
+  };
+}
+
+function renderMetrics() {
+  const node = el("metrics");
   if (!node) return;
   const data = state.overview;
   if (!data) {
@@ -152,102 +438,335 @@ function renderStats() {
     return;
   }
   const capture = data.capture || {};
+  const mode = captureMode(capture);
   const parts = [];
-  parts.push(chip(t("stats.files", "文件数"), data.total_files || 0));
-  parts.push(chip(t("stats.size", "占用"), (data.total_size_mb || 0) + " MB"));
-  parts.push(chip(t("stats.compressed", "已压缩"), data.compressed_count || 0));
-  if (data.newest_file) parts.push(chip(t("stats.newest", "最新"), data.newest_file));
-  if (data.oldest_file) parts.push(chip(t("stats.oldest", "最旧"), data.oldest_file));
-  const mode = capture.mode || "unknown";
-  const modeWarn = mode !== "loguru" && mode !== "logging";
-  parts.push(chip(t("stats.mode", "捕获模式"), mode, modeWarn));
-  if (capture.handler_level) {
-    parts.push(chip(t("stats.handlerLevel", "写入级别"), capture.handler_level));
-  }
-  if (capture.astrbot_effective_level) {
+  parts.push(
+    metricHtml(
+      t("stats.files", "日志文件"),
+      data.total_files || 0,
+      t("stats.compressed", "已压缩") + " " + (data.compressed_count || 0)
+    )
+  );
+  parts.push(
+    metricHtml(
+      t("stats.size", "占用空间"),
+      (data.total_size_mb || 0) + " MB",
+      data.data_dir || ""
+    )
+  );
+  parts.push(
+    metricHtml(
+      t("stats.mode", "采集模式"),
+      mode.text,
+      t("stats.handlerLevel", "写入级别") + " " + (capture.handler_level || "-"),
+      mode.kind
+    )
+  );
+  if (mode.mode === "loguru") {
     parts.push(
-      chip(
-        t("stats.sourceLevel", "AstrBot 级别"),
-        capture.astrbot_effective_level,
-        capture.astrbot_effective_level !== "DEBUG"
+      metricHtml(
+        t("stats.forwarded", "已转发"),
+        capture.forwarded || 0,
+        t("stats.dropped", "丢弃") + " " + (capture.dropped || 0),
+        capture.dropped ? "warn" : ""
+      )
+    );
+  } else {
+    parts.push(
+      metricHtml(
+        t("stats.attached", "已挂载 logger"),
+        (capture.attached_loggers || []).length,
+        t("stats.backfilled", "启动回填") + " " + (capture.backfilled || 0)
       )
     );
   }
-  if (capture.forwarded !== undefined) {
-    parts.push(chip(t("stats.forwarded", "已转发"), capture.forwarded));
-  }
-  if (capture.dropped) {
-    parts.push(chip(t("stats.dropped", "丢弃"), capture.dropped, true));
-  }
-  if (capture.backfilled) {
-    parts.push(chip(t("stats.backfilled", "启动回填"), capture.backfilled));
-  }
-  if (capture.plugin_loggers !== undefined) {
-    parts.push(chip(t("stats.pluginLoggers", "插件日志器"), capture.plugin_loggers));
-  }
-  if (capture.version) parts.push(chip(t("stats.version", "版本"), capture.version));
-  if (data.slice_by_record_time === false) {
-    parts.push(chip(t("stats.slice", "按记录时间切片"), t("common.off", "关闭"), true));
-  }
-  const warnings = Array.isArray(capture.warnings) ? capture.warnings : [];
-  for (const warning of warnings) {
-    parts.push(chip(t("stats.warning", "提示"), warning, true));
-  }
-  if (data.data_dir) parts.push(chip(t("stats.dataDir", "数据目录"), data.data_dir));
+  parts.push(
+    metricHtml(
+      t("stats.pluginLoggers", "插件日志器"),
+      capture.plugin_loggers === undefined ? "-" : capture.plugin_loggers,
+      t("stats.installed", "已安装插件") + " " + (capture.installed_plugins || 0)
+    )
+  );
   node.innerHTML = parts.join("");
 }
+
+function renderWarnings() {
+  const node = el("warn-banner");
+  if (!node) return;
+  const data = state.overview || {};
+  const capture = data.capture || {};
+  const items = [];
+  for (const warning of Array.isArray(capture.warnings) ? capture.warnings : []) {
+    items.push(String(warning));
+  }
+  if (capture.dropped) {
+    items.push(
+      t("warn.dropped", "有日志被丢弃，通常是磁盘写入失败或过滤过严") +
+        ": " + capture.dropped
+    );
+  }
+  if (data.slice_by_record_time === false) {
+    items.push(
+      t(
+        "warn.slice",
+        "按记录时间切片已关闭：导出天数只按文件修改时间筛选，跨天的汇总日志会整体打包"
+      )
+    );
+  }
+  if (capture.mode && capture.mode !== "loguru" && capture.mode !== "logging") {
+    items.push(t("warn.mode", "采集通路尚未就绪，请查看采集诊断页"));
+  }
+  if (!Array.isArray(capture.web_routes) || !capture.web_routes.length) {
+    items.push(t("warn.routes", "WebUI 接口未注册，当前 AstrBot 版本可能过旧"));
+  }
+  if (!items.length) {
+    node.hidden = true;
+    node.innerHTML = "";
+    return;
+  }
+  node.hidden = false;
+  const collapsed = items.length > 3;
+  node.classList.toggle("is-collapsed", collapsed);
+  node.innerHTML =
+    '<div class="lv-banner-head"><span class="lv-banner-title">' +
+    esc(t("warn.title", "需要注意") + " (" + items.length + ")") +
+    '</span><button type="button" class="lv-btn lv-btn-ghost lv-btn-mini" data-banner-toggle="1">' +
+    esc(collapsed ? t("action.expand", "展开") : t("action.collapse", "收起")) +
+    '</button></div><ul class="lv-banner-list">' +
+    items.map((item) => "<li>" + esc(item) + "</li>").join("") +
+    "</ul>";
+}
+
+function renderCaptureCard() {
+  const body = el("capture-body");
+  const pill = el("capture-mode");
+  if (!body || !pill) return;
+  const capture = (state.overview && state.overview.capture) || {};
+  const mode = captureMode(capture);
+  pill.textContent = mode.text;
+  pill.dataset.kind = mode.kind;
+  const rows = [
+    [t("capture.handlerLevel", "写入级别"), capture.handler_level || "-"],
+    [t("capture.sourceLevel", "astrbot 生效级别"), capture.astrbot_effective_level || "-"],
+    [t("capture.forwarded", "已转发 / 丢弃"), (capture.forwarded || 0) + " / " + (capture.dropped || 0)],
+    [t("capture.backfilled", "启动回填"), capture.backfilled || 0],
+    [t("capture.attached", "已挂载 logger"), (capture.attached_loggers || []).length],
+    [t("capture.routes", "WebUI 接口"), (capture.web_routes || []).length],
+    [t("capture.version", "插件版本"), capture.version || "-"],
+  ];
+  body.innerHTML = kvHtml(rows);
+}
+
+function renderSourcesCard() {
+  const body = el("sources-body");
+  const pill = el("sources-count");
+  if (!body || !pill) return;
+  const sources = (state.overview && state.overview.sources) || [];
+  pill.textContent = sources.length + " " + t("unit.source", "个来源");
+  if (!sources.length) {
+    body.innerHTML = '<p class="lv-empty">' + esc(t("sources.empty", "暂无可读来源")) + "</p>";
+    return;
+  }
+  const stats = new Map();
+  for (const item of state.categories) {
+    if (item.key !== "__all__") continue;
+    stats.set(item.source, item);
+  }
+  body.innerHTML =
+    '<div class="lv-list">' +
+    sources
+      .map((item) => {
+        const info = stats.get(item.label);
+        const count = info ? info.count : 0;
+        return (
+          '<div class="lv-row"><div class="lv-row-main">' +
+          '<div class="lv-row-title">' + esc(sourceLabel(item.label, item.kind)) + "</div>" +
+          '<div class="lv-row-sub" title="' + esc(item.path) + '">' + esc(item.path) + "</div>" +
+          '</div><span class="lv-row-num">' +
+          esc(count + " " + t("unit.file", "个") + (info ? " · " + formatSize(info.size) : "")) +
+          "</span></div>"
+        );
+      })
+      .join("") +
+    "</div>";
+}
+
+function renderDistCard() {
+  const body = el("dist-body");
+  const pill = el("dist-total");
+  if (!body || !pill) return;
+  const items = state.categories.filter(
+    (item) => item.key !== "__all__" && (item.size || item.count)
+  );
+  const total = items.reduce((sum, item) => sum + (item.size || 0), 0);
+  pill.textContent = formatSize(total);
+  if (!items.length) {
+    body.innerHTML = '<p class="lv-empty">' + esc(t("dist.empty", "暂无日志")) + "</p>";
+    return;
+  }
+  const sorted = items.slice().sort((a, b) => (b.size || 0) - (a.size || 0));
+  const top = sorted.slice(0, 12);
+  const rest = sorted.slice(12);
+  const bars = top.map((item) => {
+    const ratio = total > 0 ? Math.max(2, Math.round(((item.size || 0) / total) * 100)) : 0;
+    return (
+      '<div class="lv-bar"><span class="lv-bar-name" title="' +
+      esc(item.name + " · " + kindLabel(item.kind)) + '">' +
+      esc(item.name) + '</span><span class="lv-bar-val">' +
+      esc(formatSize(item.size) + " · " + (item.count || 0)) +
+      '</span><span class="lv-bar-track"><i class="lv-bar-fill" style="width:' +
+      ratio + '%"></i></span></div>'
+    );
+  });
+  if (rest.length) {
+    const restSize = rest.reduce((sum, item) => sum + (item.size || 0), 0);
+    bars.push(
+      '<div class="lv-bar"><span class="lv-bar-name">' +
+        esc(t("dist.rest", "其他") + " (" + rest.length + ")") +
+        '</span><span class="lv-bar-val">' + esc(formatSize(restSize)) +
+        '</span><span class="lv-bar-track"><i class="lv-bar-fill" style="width:' +
+        (total > 0 ? Math.round((restSize / total) * 100) : 0) + '%"></i></span></div>'
+    );
+  }
+  body.innerHTML = '<div class="lv-bars">' + bars.join("") + "</div>";
+}
+
+function renderBundleCard() {
+  const list = el("plugin-options");
+  if (list) {
+    const names = Array.from(
+      new Set(
+        state.categories
+          .filter((item) => item.kind === "plugin")
+          .map((item) => item.name)
+      )
+    ).sort();
+    list.innerHTML = names
+      .map((name) => '<option value="' + esc(name) + '"></option>')
+      .join("");
+  }
+  const note = el("slice-note");
+  if (note) {
+    const slice = state.overview ? state.overview.slice_by_record_time !== false : true;
+    note.textContent = slice
+      ? t(
+          "bundle.sliceOn",
+          "按记录时间切片已开启：打包时会逐行截取指定天数内的记录，跨天的汇总日志也能精确裁剪。"
+        )
+      : t(
+          "bundle.sliceOff",
+          "按记录时间切片已关闭：只按文件修改时间筛选，命中的文件会整体打包。"
+        );
+  }
+}
+
+function updateStatusBar() {
+  const left = el("status-left");
+  const right = el("status-right");
+  const data = state.overview;
+  if (left) {
+    left.textContent = data
+      ? (data.data_dir || "-") +
+        " · " + (data.total_files || 0) + " " + t("unit.file", "个") +
+        " · " + (data.total_size_mb || 0) + " MB"
+      : t("status.loading", "正在加载...");
+    left.title = left.textContent;
+  }
+  if (right) {
+    const parts = [t("status.tab", "当前页") + ": " + t("tab." + state.tab, state.tab)];
+    if (data && data.newest_file) parts.push(t("stats.newest", "最新") + ": " + data.newest_file);
+    if (state.refreshedAt) parts.push(t("status.refreshed", "刷新于") + " " + state.refreshedAt);
+    right.textContent = parts.join(" · ");
+    right.title = right.textContent;
+  }
+}
+
+function renderOverview() {
+  renderMetrics();
+  renderWarnings();
+  renderCaptureCard();
+  renderSourcesCard();
+  renderDistCard();
+  renderBundleCard();
+  updateStatusBar();
+}
+
+// -- files tab -------------------------------------------------------------
 
 function visibleCategories() {
   const needle = (el("category-filter").value || "").trim().toLowerCase();
   if (!needle) return state.categories;
   return state.categories.filter((item) => {
-    const haystack = (item.name || "") + " " + (item.key || "") + " " + (item.source || "");
-    return haystack.toLowerCase().includes(needle);
+    const haystack =
+      (item.name || "") + " " + (item.key || "") + " " + (item.source || "");
+    return haystack.toLowerCase().indexOf(needle) !== -1;
   });
 }
 
+function nodeHtml(item) {
+  const active =
+    state.category &&
+    state.category.source === item.source &&
+    state.category.key === item.key;
+  return (
+    '<button type="button" role="treeitem" class="lv-node' +
+    (active ? " is-active" : "") +
+    '" aria-selected="' + (active ? "true" : "false") +
+    '" data-source="' + esc(item.source) +
+    '" data-key="' + esc(item.key) +
+    '" data-name="' + esc(item.name) +
+    '" title="' + esc(item.name + " · " + (item.count || 0) + " · " + formatSize(item.size)) +
+    '"><span class="lv-node-name">' + esc(item.name) + "</span>" +
+    '<span class="lv-node-count">' + esc(item.count || 0) + "</span></button>"
+  );
+}
+
+// Two level grouping: data source first, then category kind, so plugin logs
+// are always browsable as their own block instead of one long flat list.
 function renderTree() {
   const node = el("tree");
   if (!node) return;
   const items = visibleCategories();
   if (!items.length) {
-    node.innerHTML = '<p class="lv-muted lv-empty">' + esc(t("tree.empty", "没有匹配的分类")) + "</p>";
+    node.innerHTML = '<p class="lv-empty">' + esc(t("tree.empty", "没有匹配的分类")) + "</p>";
     return;
   }
-  const groups = new Map();
+  const sources = [];
+  const bySource = new Map();
   for (const item of items) {
-    const key = item.source;
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(item);
+    if (!bySource.has(item.source)) {
+      bySource.set(item.source, []);
+      sources.push(item.source);
+    }
+    bySource.get(item.source).push(item);
   }
   const html = [];
-  for (const [source, entries] of groups) {
-    entries.sort((a, b) => {
-      const ka = KIND_ORDER[a.kind] === undefined ? 9 : KIND_ORDER[a.kind];
-      const kb = KIND_ORDER[b.kind] === undefined ? 9 : KIND_ORDER[b.kind];
-      if (ka !== kb) return ka - kb;
-      return String(a.name).localeCompare(String(b.name));
-    });
+  for (const source of sources) {
+    const entries = bySource.get(source);
     const kind = entries[0] ? entries[0].source_kind : "";
+    const files = entries.reduce(
+      (sum, item) => (item.key === "__all__" ? sum + (item.count || 0) : sum),
+      0
+    );
     html.push('<div class="lv-tree-group">');
-    html.push('<p class="lv-muted">' + esc(sourceLabel(source, kind)) + "</p>");
-    for (const item of entries) {
-      const selected =
-        state.category &&
-        state.category.source === item.source &&
-        state.category.key === item.key;
-      html.push(
-        '<button type="button" role="treeitem" class="lv-tree-item' +
-          (item.kind === "plugin" ? " lv-tree-indent" : "") +
-          '" aria-selected="' + (selected ? "true" : "false") +
-          '" data-source="' + esc(item.source) +
-          '" data-key="' + esc(item.key) +
-          '" data-name="' + esc(item.name) +
-          '" data-kind="' + esc(item.kind) + '">' +
-          '<span class="lv-name">' + esc(item.name) + "</span>" +
-          '<span class="lv-count">' + esc(item.count || 0) + " / " + esc(formatSize(item.size)) + "</span>" +
-          "</button>"
-      );
+    html.push(
+      '<p class="lv-tree-label"><span class="lv-node-name" title="' +
+        esc(sourceLabel(source, kind)) + '">' + esc(sourceLabel(source, kind)) +
+        '</span><span class="lv-node-count">' + esc(files) + "</span></p>"
+    );
+    const kinds = ["all", "builtin", "plugin", "other"];
+    for (const group of kinds) {
+      const bucket = entries
+        .filter((item) => item.kind === group)
+        .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+      if (!bucket.length) continue;
+      if (group !== "all") {
+        html.push(
+          '<p class="lv-tree-label"><span>' + esc(kindLabel(group)) +
+            '</span><span class="lv-node-count">' + bucket.length + "</span></p>"
+        );
+      }
+      for (const item of bucket) html.push(nodeHtml(item));
     }
     html.push("</div>");
   }
@@ -256,9 +775,56 @@ function renderTree() {
 
 function visibleFiles() {
   const needle = (el("file-filter").value || "").trim().toLowerCase();
-  if (!needle) return state.files;
-  return state.files.filter((item) =>
-    ((item.relative || item.name || "") + " " + (item.category_name || "")).toLowerCase().includes(needle)
+  const items = needle
+    ? state.files.filter(
+        (item) =>
+          ((item.relative || item.name || "") + " " + (item.category_name || ""))
+            .toLowerCase()
+            .indexOf(needle) !== -1
+      )
+    : state.files.slice();
+  const sort = state.sort;
+  items.sort((a, b) => {
+    if (sort === "size") return (b.size || 0) - (a.size || 0);
+    if (sort === "name") {
+      return String(a.relative || a.name).localeCompare(String(b.relative || b.name));
+    }
+    return (b.mtime || 0) - (a.mtime || 0);
+  });
+  return items;
+}
+
+function fileRowHtml(item) {
+  const opened = state.view.file && state.view.file.id === item.id;
+  const tags = [];
+  if (item.active) {
+    tags.push('<span class="lv-badge" data-kind="ok">' + esc(t("tag.active", "写入中")) + "</span>");
+  }
+  if (item.compressed) tags.push('<span class="lv-badge" data-kind="info">gz</span>');
+  const check = item.deletable
+    ? '<input type="checkbox" class="lv-check" data-id="' + esc(item.id) + '"' +
+      (state.selected.has(item.id) ? " checked" : "") +
+      ' aria-label="' + esc(item.name) + '" />'
+    : "";
+  return (
+    '<tr data-id="' + esc(item.id) + '" class="' + (opened ? "is-selected" : "") + '">' +
+    '<td class="lv-col-check">' + check + "</td>" +
+    '<td><div class="lv-cell-file"><div class="lv-cell-name">' +
+    '<button type="button" class="lv-file-link" data-open="' + esc(item.id) +
+    '" title="' + esc(item.relative || item.name) + '">' + esc(item.name) + "</button>" +
+    tags.join("") + "</div>" +
+    '<div class="lv-cell-path" title="' + esc(item.relative || "") + '">' +
+    esc(item.relative || "") + "</div></div></td>" +
+    '<td><div class="lv-cell-cat" title="' + esc(item.category_name || item.category || "") +
+    '">' + esc(item.category_name || item.category || "-") + "</div></td>" +
+    '<td class="lv-num">' + esc(formatSize(item.size)) + "</td>" +
+    "<td>" + esc(formatTime(item.mtime)) + "</td>" +
+    '<td class="lv-col-act"><div class="lv-acts">' +
+    '<button type="button" class="lv-btn lv-btn-ghost lv-btn-mini" data-open="' +
+    esc(item.id) + '">' + esc(t("action.view", "查看")) + "</button>" +
+    '<button type="button" class="lv-btn lv-btn-ghost lv-btn-mini" data-download="' +
+    esc(item.id) + '">' + esc(t("action.download", "下载")) + "</button>" +
+    "</div></td></tr>"
   );
 }
 
@@ -272,34 +838,10 @@ function renderFiles() {
     empty.hidden = false;
     empty.textContent = state.category
       ? t("files.empty", "该分类下没有日志文件")
-      : t("files.pick", "请选择左侧分类。");
+      : t("files.pick", "请选择左侧分类");
   } else {
     empty.hidden = true;
-    body.innerHTML = items
-      .map((item) => {
-        const opened = state.file && state.file.id === item.id;
-        const tags = [];
-        if (item.active) {
-          tags.push('<span class="lv-tag lv-tag-active">' + esc(t("tag.active", "写入中")) + "</span>");
-        }
-        if (item.compressed) tags.push('<span class="lv-tag lv-tag-gz">gz</span>');
-        const checkbox = item.deletable
-          ? '<input type="checkbox" class="lv-check" data-id="' + esc(item.id) + '"' +
-            (state.selected.has(item.id) ? " checked" : "") +
-            ' aria-label="' + esc(item.name) + '" />'
-          : "";
-        return (
-          '<tr data-id="' + esc(item.id) + '" aria-selected="' + (opened ? "true" : "false") + '">' +
-          '<td class="lv-col-check">' + checkbox + "</td>" +
-          '<td class="lv-name" title="' + esc(item.relative || item.name) + '">' +
-          esc(item.relative || item.name) + tags.join("") + "</td>" +
-          "<td>" + esc(item.category_name || item.category || "-") + "</td>" +
-          '<td class="lv-num">' + esc(formatSize(item.size)) + "</td>" +
-          "<td>" + esc(formatTime(item.mtime)) + "</td>" +
-          "</tr>"
-        );
-      })
-      .join("");
+    body.innerHTML = items.map(fileRowHtml).join("");
   }
   const deletable = items.filter((item) => item.deletable);
   const checkAll = el("check-all");
@@ -308,61 +850,454 @@ function renderFiles() {
     checkAll.checked =
       deletable.length > 0 && deletable.every((item) => state.selected.has(item.id));
   }
-  el("btn-delete").disabled = state.selected.size === 0;
+  const remove = el("btn-delete");
+  if (remove) {
+    remove.disabled = state.selected.size === 0;
+    remove.textContent =
+      state.selected.size > 0
+        ? t("action.delete", "删除所选") + " (" + state.selected.size + ")"
+        : t("action.delete", "删除所选");
+  }
   const scope = el("file-scope");
   if (scope) {
-    scope.textContent = state.category
-      ? state.category.name + " · " + items.length + " " + t("files.unit", "个文件")
+    const text = state.category
+      ? state.category.name + " · " + items.length + " " + t("unit.file", "个")
       : t("files.none", "未选择分类");
+    scope.textContent = text;
+    scope.title = text;
   }
 }
 
-function renderLines(lines, append) {
-  const view = el("log-view");
-  if (!view) return;
-  const html = (lines || [])
-    .map((line) => {
-      const level = lineLevel(line);
-      const cls = level ? "lv-line lv-line-" + level : "lv-line";
-      return '<span class="' + cls + '">' + esc(line) + "</span>";
-    })
-    .join("");
-  const atBottom = view.scrollTop + view.clientHeight >= view.scrollHeight - 24;
-  if (append) view.insertAdjacentHTML("beforeend", html);
-  else view.innerHTML = html;
-  if (!append || atBottom) view.scrollTop = view.scrollHeight;
+// -- drawer viewer ---------------------------------------------------------
+
+function viewFilter(jump) {
+  return {
+    level: "",
+    tag: "",
+    keyword: el("view-keyword").value.trim(),
+    follow: el("view-follow").checked,
+    jump: Boolean(jump),
+  };
 }
 
-// -- data loading ----------------------------------------------------------
+function renderView(jump) {
+  const result = renderStream(el("log-view"), state.view.entries, viewFilter(jump));
+  const file = state.view.file;
+  const meta = [];
+  if (file) {
+    meta.push(t("meta.shown", "显示") + " " + result.shown + " / " + result.total);
+    if (result.clipped) meta.push(t("meta.clipped", "仅渲染最后 2000 行"));
+    meta.push(t("meta.matched", "命中行") + ": " + (file.matched || 0));
+    meta.push(t("meta.scanned", "扫描行") + ": " + (file.scanned || 0));
+    meta.push(t("meta.size", "大小") + ": " + formatSize(file.size));
+    if (file.truncated) meta.push(t("meta.truncated", "已达扫描上限，仅显示部分内容"));
+    if (file.compressed) meta.push(t("meta.compressed", "压缩文件不支持实时跟随"));
+    if (file.error) meta.push(file.error);
+  }
+  el("view-meta").textContent = meta.join(" · ");
+}
 
-async function loadOverview(quiet) {
+function closeDrawer() {
+  stopViewFollow();
+  const drawer = el("drawer");
+  if (!drawer) return;
+  drawer.hidden = true;
+  drawer.setAttribute("aria-hidden", "true");
+  state.view.file = null;
+  state.view.entries = [];
+  renderFiles();
+}
+
+async function openDrawer(fileId) {
+  const drawer = el("drawer");
+  if (!drawer) return;
+  drawer.hidden = false;
+  drawer.setAttribute("aria-hidden", "false");
+  await loadContent(fileId);
+}
+
+async function loadContent(fileId) {
+  const id = fileId || (state.view.file && state.view.file.id);
+  if (!id) return;
+  stopViewFollow(true);
   try {
-    const data = await apiGet("overview");
-    state.overview = data;
-    state.categories = Array.isArray(data.categories) ? data.categories : [];
-    renderStats();
-    if (state.category) {
-      const still = state.categories.some(
-        (item) => item.source === state.category.source && item.key === state.category.key
-      );
-      if (!still) state.category = null;
-    }
-    if (!state.category && state.categories.length) {
-      const first = state.categories[0];
-      state.category = { source: first.source, key: first.key, name: first.name };
-    }
-    renderTree();
-    await loadFiles();
-    if (!quiet) toast(t("toast.refreshed", "已刷新"));
+    const data = await apiGet("content", {
+      id,
+      tail: Number(el("view-tail").value) || 500,
+      level: el("view-level").value || "",
+      keyword: "",
+    });
+    state.view.file = data;
+    state.view.position = Number(data.position) || 0;
+    state.view.entries = toEntries(data.lines);
+    el("drawer-title").textContent = data.name || "-";
+    const sub = (data.source ? sourceLabel(data.source, "") + " · " : "") + formatTime(data.mtime);
+    el("drawer-sub").textContent = sub;
+    el("drawer-sub").title = sub;
+    const follow = el("view-follow");
+    follow.disabled = Boolean(data.compressed);
+    if (data.compressed) follow.checked = false;
+    renderView(true);
+    renderFiles();
+    if (follow.checked) startViewFollow();
   } catch (err) {
     toast(errorText(err), "error");
   }
 }
 
+async function pollView() {
+  const file = state.view.file;
+  if (!file || state.view.busy) return;
+  state.view.busy = true;
+  try {
+    const data = await apiGet("tail", { id: file.id, position: state.view.position });
+    if (!data || data.supported === false) {
+      stopViewFollow();
+      toast(t("toast.followUnsupported", "该文件不支持实时跟随"), "error");
+      return;
+    }
+    state.view.position = Number(data.position) || 0;
+    if (data.reset) {
+      state.view.entries = toEntries(data.lines);
+      toast(t("toast.rotated", "日志已轮换，视图已重置"));
+      renderView(true);
+    } else if (pushEntries(state.view.entries, data.lines)) {
+      renderView(false);
+    }
+  } catch (err) {
+    stopViewFollow();
+    toast(errorText(err), "error");
+  } finally {
+    state.view.busy = false;
+  }
+}
+
+function startViewFollow() {
+  stopViewFollow(true);
+  const file = state.view.file;
+  if (!file || file.compressed) return;
+  state.view.timer = window.setInterval(pollView, FOLLOW_INTERVAL_MS);
+}
+
+function stopViewFollow(keepCheckbox) {
+  if (state.view.timer) {
+    window.clearInterval(state.view.timer);
+    state.view.timer = null;
+  }
+  if (!keepCheckbox) {
+    const box = el("view-follow");
+    if (box) box.checked = false;
+  }
+}
+
+// -- live tab --------------------------------------------------------------
+
+function liveFilter(jump) {
+  return {
+    level: el("live-level").value,
+    tag: el("live-tag").value,
+    keyword: el("live-keyword").value.trim(),
+    follow: el("live-follow").checked,
+    jump: Boolean(jump),
+  };
+}
+
+function renderLiveTags() {
+  const select = el("live-tag");
+  if (!select) return;
+  const current = select.value;
+  const tags = new Set();
+  for (const entry of state.live.entries) {
+    if (entry.tag) tags.add(entry.tag);
+  }
+  const options = [
+    '<option value="">' + esc(t("live.allTags", "全部来源")) + "</option>",
+  ];
+  for (const tag of Array.from(tags).sort()) {
+    options.push('<option value="' + esc(tag) + '">' + esc(tag) + "</option>");
+  }
+  select.innerHTML = options.join("");
+  select.value = tags.has(current) ? current : "";
+}
+
+function renderLive(jump) {
+  const result = renderStream(el("live-stream"), state.live.entries, liveFilter(jump));
+  const meta = el("live-meta");
+  if (meta) {
+    meta.textContent =
+      t("live.shown", "当前展示") + " " + result.shown + " / " + result.total + " " +
+      t("unit.line", "行") +
+      (result.clipped ? " · " + t("meta.clipped", "仅渲染最后 2000 行") : "");
+  }
+  const hint = el("live-hint");
+  if (hint) {
+    hint.textContent = state.live.timer
+      ? t("live.polling", "每 2 秒增量拉取")
+      : t("live.paused", "已暂停");
+  }
+}
+
+function buildLiveFiles() {
+  const select = el("live-file");
+  if (!select) return;
+  const followable = state.allFiles.filter((item) => !item.compressed);
+  if (!followable.length) {
+    select.innerHTML = '<option value="">' + esc(t("live.noFile", "暂无可跟随文件")) + "</option>";
+    return;
+  }
+  const bySource = new Map();
+  for (const item of followable) {
+    if (!bySource.has(item.source)) bySource.set(item.source, []);
+    bySource.get(item.source).push(item);
+  }
+  const html = [];
+  for (const [source, items] of bySource) {
+    items.sort((a, b) => (b.mtime || 0) - (a.mtime || 0));
+    html.push(
+      '<optgroup label="' + esc(sourceLabel(source, items[0].source_kind)) + '">'
+    );
+    for (const item of items) {
+      html.push(
+        '<option value="' + esc(item.id) + '">' +
+          esc((item.relative || item.name) + " · " + formatSize(item.size)) +
+          "</option>"
+      );
+    }
+    html.push("</optgroup>");
+  }
+  select.innerHTML = html.join("");
+  const preferred =
+    followable.find((item) => item.id === state.live.id) ||
+    followable.find((item) => item.relative === "all/all.log" && item.source === "current") ||
+    followable.find((item) => item.active) ||
+    followable[0];
+  state.live.id = preferred.id;
+  select.value = preferred.id;
+}
+
+async function loadLive(reset) {
+  const select = el("live-file");
+  if (!select || !select.value) return;
+  state.live.id = select.value;
+  try {
+    const data = await apiGet("content", { id: state.live.id, tail: 800 });
+    state.live.entries = toEntries(data.lines);
+    state.live.position = Number(data.position) || 0;
+    renderLiveTags();
+    renderLive(true);
+    if (reset) toast(t("toast.liveLoaded", "已载入日志尾部"));
+  } catch (err) {
+    toast(errorText(err), "error");
+  }
+}
+
+async function pollLive() {
+  if (!state.live.id || state.live.busy) return;
+  if (document.hidden) return;
+  state.live.busy = true;
+  try {
+    const data = await apiGet("tail", { id: state.live.id, position: state.live.position });
+    if (!data || data.supported === false) {
+      stopLive();
+      return;
+    }
+    state.live.position = Number(data.position) || 0;
+    if (data.reset) {
+      state.live.entries = toEntries(data.lines);
+      renderLiveTags();
+      renderLive(true);
+    } else if (pushEntries(state.live.entries, data.lines)) {
+      renderLiveTags();
+      renderLive(false);
+    }
+  } catch (err) {
+    stopLive();
+    toast(errorText(err), "error");
+  } finally {
+    state.live.busy = false;
+  }
+}
+
+function startLive() {
+  stopLive();
+  if (!state.live.id) buildLiveFiles();
+  if (!state.live.id) return;
+  if (!state.live.entries.length) loadLive(false);
+  if (!el("live-follow").checked) {
+    renderLive(false);
+    return;
+  }
+  state.live.timer = window.setInterval(pollLive, FOLLOW_INTERVAL_MS);
+  renderLive(false);
+}
+
+function stopLive() {
+  if (state.live.timer) {
+    window.clearInterval(state.live.timer);
+    state.live.timer = null;
+  }
+  const hint = el("live-hint");
+  if (hint && state.tab === "live") hint.textContent = t("live.paused", "已暂停");
+}
+
+function copyStream(entries, filter) {
+  const text = entries
+    .filter((entry) => entryPasses(entry, filter))
+    .map((entry) => entry.raw)
+    .join("\n");
+  if (!text) {
+    toast(t("toast.nothingToCopy", "没有可复制的内容"), "error");
+    return;
+  }
+  const done = () => toast(t("toast.copied", "已复制到剪贴板"));
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, () => fallbackCopy(text, done));
+      return;
+    }
+  } catch (err) {
+    /* fall through to the textarea fallback */
+  }
+  fallbackCopy(text, done);
+}
+
+function fallbackCopy(text, done) {
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.setAttribute("readonly", "readonly");
+  area.style.position = "fixed";
+  area.style.opacity = "0";
+  document.body.appendChild(area);
+  area.select();
+  let ok = false;
+  try {
+    ok = document.execCommand("copy");
+  } catch (err) {
+    ok = false;
+  }
+  document.body.removeChild(area);
+  if (ok) done();
+  else toast(t("toast.copyFailed", "复制失败，请手动选择文本"), "error");
+}
+
+// -- search tab ------------------------------------------------------------
+
+const HIT_RE = /^\[([^\]]+)\]\s*([\s\S]*)$/;
+
+async function runSearch() {
+  const keyword = el("search-keyword").value.trim();
+  const meta = el("search-meta");
+  const box = el("search-results");
+  if (!keyword) {
+    toast(t("toast.needKeyword", "请输入搜索关键词"), "error");
+    return;
+  }
+  const limit = Math.max(10, Math.min(Number(el("search-limit").value) || 100, 500));
+  meta.textContent = t("search.working", "正在搜索...");
+  box.innerHTML = "";
+  try {
+    const data = await apiGet("search", { keyword, limit });
+    const results = asList(data, "results");
+    meta.textContent =
+      t("search.result", "命中") + " " + results.length + " / " + (data.total || 0);
+    if (!results.length) {
+      box.innerHTML = '<p class="lv-empty">' + esc(t("search.empty", "没有命中的日志行")) + "</p>";
+      return;
+    }
+    box.innerHTML = results
+      .map((row) => {
+        const match = HIT_RE.exec(String(row));
+        if (!match) return '<div class="lv-hit">' + highlight(row, keyword) + "</div>";
+        return (
+          '<div class="lv-hit"><span class="lv-badge" data-kind="info">' +
+          esc(match[1]) + "</span> " + highlight(match[2], keyword) + "</div>"
+        );
+      })
+      .join("");
+  } catch (err) {
+    meta.textContent = "";
+    toast(errorText(err), "error");
+  }
+}
+
+// -- diagnostics tab -------------------------------------------------------
+
+function badgeList(values, kind) {
+  if (!values.length) return "";
+  return values
+    .map(
+      (value) =>
+        '<span class="lv-badge"' + (kind ? ' data-kind="' + kind + '"' : "") +
+        ' title="' + esc(value) + '">' + esc(value) + "</span>"
+    )
+    .join(" ");
+}
+
+function renderDiagnostics() {
+  const capture = state.capture || (state.overview && state.overview.capture) || {};
+  const mode = captureMode(capture);
+  el("diag-pipeline").innerHTML = kvHtml([
+    [t("diag.mode", "采集模式"), mode.text],
+    [t("diag.loguru", "loguru sink"), capture.loguru_active ? t("common.on", "已接入") : t("common.off", "未接入")],
+    [t("capture.handlerLevel", "写入级别"), capture.handler_level || "-"],
+    [t("capture.sourceLevel", "astrbot 生效级别"), capture.astrbot_effective_level || "-"],
+    [t("capture.forwarded", "已转发 / 丢弃"), (capture.forwarded || 0) + " / " + (capture.dropped || 0)],
+    [t("capture.backfilled", "启动回填"), capture.backfilled || 0],
+    [t("stats.pluginLoggers", "插件日志器"), capture.plugin_loggers === undefined ? "-" : capture.plugin_loggers],
+    [t("stats.installed", "已安装插件"), capture.installed_plugins || 0],
+    [t("capture.version", "插件版本"), capture.version || "-"],
+  ]);
+  const routes = Array.isArray(capture.web_routes) ? capture.web_routes : [];
+  el("diag-routes").innerHTML = routes.length
+    ? badgeList(routes, "ok")
+    : '<p class="lv-empty">' + esc(t("diag.noRoutes", "未注册任何接口")) + "</p>";
+  const loggers = Array.isArray(capture.attached_loggers) ? capture.attached_loggers : [];
+  el("diag-loggers").innerHTML = loggers.length
+    ? badgeList(loggers, "info")
+    : '<p class="lv-empty">' +
+      esc(t("diag.noLoggers", "loguru 模式下无需挂载 logging handler")) +
+      "</p>";
+  const tips = [];
+  for (const warning of Array.isArray(capture.warnings) ? capture.warnings : []) {
+    tips.push(String(warning));
+  }
+  if (mode.mode !== "loguru") {
+    tips.push(
+      t(
+        "tip.loguru",
+        "当前不是 loguru 模式：AstrBot 的控制台输出可能只有部分被记录，建议升级 AstrBot 或检查 loguru 是否可导入。"
+      )
+    );
+  }
+  if (capture.astrbot_effective_level && capture.astrbot_effective_level !== "DEBUG") {
+    tips.push(
+      t("tip.level", "astrbot 生效级别不是 DEBUG，低于该级别的日志在到达 LogVault 之前就被丢弃了。")
+    );
+  }
+  if (capture.dropped) {
+    tips.push(t("tip.dropped", "存在被丢弃的记录，请检查数据目录是否可写、磁盘是否已满。"));
+  }
+  if (!tips.length) tips.push(t("tip.healthy", "采集链路正常，未发现问题。"));
+  el("diag-tips").innerHTML =
+    '<ul class="lv-banner-list">' +
+    tips.map((item) => "<li>" + esc(item) + "</li>").join("") +
+    "</ul>";
+}
+
+async function loadDiagnostics() {
+  try {
+    state.capture = await apiGet("capture");
+  } catch (err) {
+    state.capture = (state.overview && state.overview.capture) || null;
+  }
+  renderDiagnostics();
+}
+
+// -- data loading ----------------------------------------------------------
+
 async function loadFiles() {
   if (!state.category) {
     state.files = [];
-    state.selected.clear();
     renderFiles();
     return;
   }
@@ -372,155 +1307,153 @@ async function loadFiles() {
       category: state.category.key,
     });
     state.files = asList(data, "files");
-    const ids = new Set(state.files.map((item) => item.id));
-    for (const id of Array.from(state.selected)) {
-      if (!ids.has(id)) state.selected.delete(id);
-    }
-    renderFiles();
   } catch (err) {
+    state.files = [];
     toast(errorText(err), "error");
   }
+  const alive = new Set(state.files.map((item) => item.id));
+  for (const id of Array.from(state.selected)) {
+    if (!alive.has(id)) state.selected.delete(id);
+  }
+  renderFiles();
 }
 
-async function loadContent(fileId) {
-  const id = fileId || (state.file && state.file.id);
-  if (!id) return;
-  stopFollow(true);
+// The live tab needs every followable file, not just the selected category.
+async function loadAllFiles() {
   try {
-    const data = await apiGet("content", {
-      id,
-      tail: Number(el("view-tail").value) || 500,
-      level: el("view-level").value || "",
-      keyword: el("view-keyword").value || "",
-    });
-    state.file = data;
-    state.position = Number(data.position) || 0;
-    renderLines(data.lines, false);
-    renderFiles();
-    el("viewer-title").textContent = data.name + " · " + sourceLabel(data.source, "");
-    el("btn-reload").disabled = false;
-    el("btn-download").disabled = false;
-    const followBox = el("view-follow");
-    const followable = !data.compressed;
-    followBox.disabled = !followable;
-    if (!followable) followBox.checked = false;
-    const meta = [];
-    meta.push(t("meta.matched", "命中行") + ": " + (data.matched || 0));
-    meta.push(t("meta.scanned", "扫描行") + ": " + (data.scanned || 0));
-    meta.push(t("meta.size", "大小") + ": " + formatSize(data.size));
-    meta.push(t("meta.mtime", "修改时间") + ": " + formatTime(data.mtime));
-    if (data.truncated) meta.push(t("meta.truncated", "已达扫描上限，仅显示部分内容"));
-    if (data.compressed) meta.push(t("meta.compressed", "压缩文件不支持实时跟随"));
-    if (data.error) meta.push(data.error);
-    el("view-meta").textContent = meta.join(" · ");
-    if (followBox.checked) startFollow();
+    const data = await apiGet("files");
+    state.allFiles = asList(data, "files");
   } catch (err) {
-    toast(errorText(err), "error");
+    state.allFiles = [];
   }
+  buildLiveFiles();
 }
 
-async function pollTail() {
-  if (!state.file || state.busy) return;
-  state.busy = true;
+async function loadOverview(quiet) {
   try {
-    const data = await apiGet("tail", { id: state.file.id, position: state.position });
-    if (!data || data.supported === false) {
-      stopFollow();
-      el("view-follow").checked = false;
-      toast(t("toast.followUnsupported", "该文件不支持实时跟随"), "error");
-      return;
-    }
-    state.position = Number(data.position) || 0;
-    if (data.reset) {
-      renderLines(data.lines, false);
-      toast(t("toast.rotated", "日志已轮换，视图已重置"));
-    } else if (data.lines && data.lines.length) {
-      renderLines(data.lines, true);
-    }
+    const data = await apiGet("overview");
+    state.overview = data;
+    state.capture = data.capture || state.capture;
+    state.categories = Array.isArray(data.categories) ? data.categories : [];
+    const match = state.category
+      ? state.categories.find(
+          (item) =>
+            item.source === state.category.source && item.key === state.category.key
+        )
+      : null;
+    state.category =
+      match ||
+      state.categories.find((item) => item.key === "__all__") ||
+      state.categories[0] ||
+      null;
+    state.refreshedAt = new Date().toLocaleTimeString();
+    renderOverview();
+    renderTree();
+    await loadFiles();
+    await loadAllFiles();
+    if (state.tab === "diag") renderDiagnostics();
+    if (!quiet) toast(t("toast.refreshed", "已刷新"));
   } catch (err) {
-    stopFollow();
-    el("view-follow").checked = false;
     toast(errorText(err), "error");
-  } finally {
-    state.busy = false;
-  }
-}
-
-function startFollow() {
-  stopFollow(true);
-  if (!state.file || state.file.compressed) return;
-  state.followTimer = window.setInterval(pollTail, FOLLOW_INTERVAL_MS);
-}
-
-function stopFollow(keepCheckbox) {
-  if (state.followTimer) {
-    window.clearInterval(state.followTimer);
-    state.followTimer = null;
-  }
-  if (!keepCheckbox) {
-    const box = el("view-follow");
-    if (box) box.checked = false;
   }
 }
 
 // -- actions ---------------------------------------------------------------
 
+function stamp() {
+  const now = new Date();
+  const pad = (value) => String(value).padStart(2, "0");
+  return (
+    now.getFullYear() +
+    pad(now.getMonth() + 1) +
+    pad(now.getDate()) +
+    "_" +
+    pad(now.getHours()) +
+    pad(now.getMinutes()) +
+    pad(now.getSeconds())
+  );
+}
+
 async function downloadBundle() {
-  const mode = el("bundle-target").value;
-  const days = Math.max(1, Math.min(Number(el("bundle-days").value) || 7, 3650));
-  let target = mode;
-  if (mode === "plugin") {
+  const scope = el("bundle-target").value;
+  let target = scope;
+  if (scope === "plugin") {
     target = (el("bundle-plugin").value || "").trim();
     if (!target) {
       toast(t("toast.needPlugin", "请填写插件名"), "error");
+      el("bundle-plugin").focus();
       return;
     }
   }
+  const days = Math.max(1, Math.min(Number(el("bundle-days").value) || 7, 3650));
+  el("bundle-days").value = days;
   const hint = el("bundle-hint");
-  hint.textContent = t("bundle.working", "正在打包...");
-  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "");
-  const name = "logvault_" + (mode === "plugin" ? target : mode) + "_" + days + "d_" + stamp + ".zip";
+  const button = el("btn-bundle");
+  button.disabled = true;
+  if (hint) hint.textContent = t("bundle.working", "正在打包，请稍候...");
+  const safe = target.replace(/[^A-Za-z0-9_.-]+/g, "_");
   try {
-    await bridge.download("bundle", { target, days }, name);
-    hint.textContent = t("bundle.done", "打包完成");
+    await bridge.download(
+      "bundle",
+      { target, days },
+      "logvault_" + safe + "_" + days + "d_" + stamp() + ".zip"
+    );
+    if (hint) hint.textContent = t("bundle.done", "打包完成");
+    toast(t("toast.bundled", "已开始下载压缩包"));
   } catch (err) {
-    hint.textContent = "";
+    if (hint) hint.textContent = "";
+    toast(errorText(err), "error");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function downloadFile(id) {
+  const file = state.files.find((item) => item.id === id) ||
+    state.allFiles.find((item) => item.id === id) ||
+    (state.view.file && state.view.file.id === id ? state.view.file : null);
+  try {
+    await bridge.download("download", { id }, (file && file.name) || "logvault.log");
+  } catch (err) {
     toast(errorText(err), "error");
   }
 }
 
 async function deleteSelected() {
-  const ids = Array.from(state.selected);
+  const ids = Array.from(state.selected).slice(0, 500);
   if (!ids.length) return;
-  const question = t("confirm.delete", "确认删除选中的日志文件？此操作不可恢复。");
+  const question = t("confirm.delete", "确认删除选中的日志文件？该操作不可恢复。");
   if (!window.confirm(question + " (" + ids.length + ")")) return;
+  const button = el("btn-delete");
+  button.disabled = true;
   try {
-    const data = await apiPost("delete", { ids });
+    const result = await apiPost("delete", { ids });
+    const skipped = Array.isArray(result.skipped) ? result.skipped.length : 0;
+    const parts = [
+      t("toast.deleted", "已删除") + " " + (result.deleted || 0),
+      t("toast.freed", "释放") + " " + formatSize(result.freed_bytes),
+    ];
+    if (skipped) parts.push(t("toast.skipped", "跳过") + " " + skipped);
+    toast(parts.join(" · "));
     state.selected.clear();
-    const skipped = Array.isArray(data.skipped) ? data.skipped : [];
-    let message =
-      t("toast.deleted", "已删除") + " " + (data.deleted || 0) + " · " + formatSize(data.freed_bytes);
-    if (skipped.length) {
-      message += " · " + t("toast.skipped", "跳过") + " " + skipped.length + " (" + skipped[0].reason + ")";
-    }
-    toast(message, skipped.length ? "error" : undefined);
     await loadOverview(true);
   } catch (err) {
     toast(errorText(err), "error");
+  } finally {
+    button.disabled = state.selected.size === 0;
   }
 }
 
 async function cleanNow() {
-  if (!window.confirm(t("confirm.clean", "立即执行压缩与过期清理？"))) return;
+  if (!window.confirm(t("confirm.clean", "立即执行压缩与清理？超期日志会被删除。"))) return;
   const button = el("btn-clean");
   button.disabled = true;
   try {
-    const data = await apiPost("clean", {});
+    const result = await apiPost("clean");
     toast(
-      t("toast.cleaned", "清理完成") +
-        " · " + t("toast.compressed", "压缩") + " " + (data.compressed || 0) +
-        " · " + t("toast.removed", "删除") + " " + (data.deleted || 0) +
-        " · " + formatSize(data.freed_bytes)
+      t("toast.compressed", "压缩") + " " + (result.compressed || 0) + " · " +
+        t("toast.deleted", "已删除") + " " + (result.deleted || 0) + " · " +
+        t("toast.freed", "释放") + " " + formatSize(result.freed_bytes)
     );
     await loadOverview(true);
   } catch (err) {
@@ -530,145 +1463,250 @@ async function cleanNow() {
   }
 }
 
-async function downloadCurrent() {
-  if (!state.file) return;
-  try {
-    await bridge.download("download", { id: state.file.id }, state.file.name);
-  } catch (err) {
-    toast(errorText(err), "error");
+// -- static text -----------------------------------------------------------
+
+const PLACEHOLDERS = [
+  ["bundle-plugin", "placeholder.plugin"],
+  ["live-keyword", "placeholder.liveKeyword"],
+  ["category-filter", "placeholder.category"],
+  ["file-filter", "placeholder.file"],
+  ["search-keyword", "placeholder.search"],
+  ["view-keyword", "placeholder.viewKeyword"],
+];
+const LABELS = [
+  ["page-title", "title"],
+  ["page-desc", "desc"],
+  ["skin-label", "skin.label"],
+  ["btn-refresh", "action.refresh"],
+  ["btn-clean", "action.clean"],
+  ["drawer-close", "action.close"],
+];
+const ARIA = [
+  ["check-all", "files.checkAll"],
+  ["file-sort", "files.sort"],
+];
+
+function defaultOf(node, attribute) {
+  const key = "i18n" + attribute;
+  if (node.dataset[key] === undefined) {
+    node.dataset[key] =
+      attribute === "Text" ? node.textContent : node.getAttribute(attribute.toLowerCase()) || "";
   }
+  return node.dataset[key];
 }
 
-// -- wiring ----------------------------------------------------------------
-
+// Applies (or re-applies, after a locale switch) every static string. The
+// first pass keeps the markup text as the fallback, so a missing i18n key
+// never blanks a label.
 function applyStaticText() {
-  el("page-title").textContent = t("title", "日志中心");
-  el("page-desc").textContent = t(
-    "desc",
-    "按来源与插件分类查看、跟随、下载和清理 AstrBot 日志。"
-  );
-  el("btn-refresh").textContent = t("action.refresh", "刷新");
-  el("btn-clean").textContent = t("action.clean", "立即清理");
-  el("btn-bundle").textContent = t("action.bundle", "下载 ZIP");
-  el("btn-delete").textContent = t("action.delete", "删除所选");
-  el("btn-reload").textContent = t("action.reload", "重新加载");
-  el("btn-download").textContent = t("action.download", "下载");
-  el("category-filter").placeholder = t("placeholder.category", "过滤分类");
-  el("file-filter").placeholder = t("placeholder.file", "过滤文件名");
-  el("view-keyword").placeholder = t("placeholder.keyword", "关键词");
+  for (const node of document.querySelectorAll("[data-i18n]")) {
+    node.textContent = t(node.dataset.i18n, defaultOf(node, "Text"));
+  }
+  for (const pair of LABELS) {
+    const node = el(pair[0]);
+    if (node) node.textContent = t(pair[1], defaultOf(node, "Text"));
+  }
+  for (const pair of PLACEHOLDERS) {
+    const node = el(pair[0]);
+    if (node) node.placeholder = t(pair[1], defaultOf(node, "Placeholder"));
+  }
+  for (const pair of ARIA) {
+    const node = el(pair[0]);
+    if (!node) continue;
+    if (node.dataset.i18nAria === undefined) {
+      node.dataset.i18nAria = node.getAttribute("aria-label") || "";
+    }
+    node.setAttribute("aria-label", t(pair[1], node.dataset.i18nAria));
+  }
+  for (const id of ["live-level", "view-level"]) {
+    const select = el(id);
+    if (select && select.options.length) {
+      select.options[0].textContent = t("live.allLevels", "全部级别");
+    }
+  }
+  const title = el("drawer-title");
+  if (title && !state.view.file) title.textContent = t("view.none", "未打开文件");
+  applyDensity();
+  buildSkinOptions();
 }
+
+// -- events ----------------------------------------------------------------
 
 function bindEvents() {
+  for (const button of document.querySelectorAll(".lv-tab")) {
+    button.addEventListener("click", () => setTab(button.dataset.tab));
+  }
+  el("skin-select").addEventListener("change", (event) => setSkin(event.target.value));
+  el("btn-density").addEventListener("click", toggleDensity);
   el("btn-refresh").addEventListener("click", () => loadOverview(false));
   el("btn-clean").addEventListener("click", cleanNow);
-  el("btn-bundle").addEventListener("click", downloadBundle);
-  el("btn-delete").addEventListener("click", deleteSelected);
-  el("btn-reload").addEventListener("click", () => loadContent());
-  el("btn-download").addEventListener("click", downloadCurrent);
 
-  el("bundle-target").addEventListener("change", (event) => {
-    el("bundle-plugin").hidden = event.target.value !== "plugin";
-    el("bundle-hint").textContent = "";
+  el("warn-banner").addEventListener("click", (event) => {
+    const toggle = event.target.closest("[data-banner-toggle]");
+    if (!toggle) return;
+    const banner = el("warn-banner");
+    const collapsed = banner.classList.toggle("is-collapsed");
+    toggle.textContent = collapsed
+      ? t("action.expand", "展开")
+      : t("action.collapse", "收起");
   });
 
-  el("category-filter").addEventListener("input", renderTree);
-  el("file-filter").addEventListener("input", renderFiles);
+  el("bundle-target").addEventListener("change", (event) => {
+    el("bundle-plugin-field").hidden = event.target.value !== "plugin";
+  });
+  el("btn-bundle").addEventListener("click", downloadBundle);
+  el("bundle-plugin").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") downloadBundle();
+  });
 
+  el("live-file").addEventListener("change", () => {
+    state.live.entries = [];
+    state.live.position = 0;
+    loadLive(false).then(() => startLive());
+  });
+  el("live-level").addEventListener("change", () => renderLive(true));
+  el("live-tag").addEventListener("change", () => renderLive(true));
+  el("live-keyword").addEventListener("input", debounce(() => renderLive(true), 250));
+  el("live-follow").addEventListener("change", (event) => {
+    if (event.target.checked) startLive();
+    else stopLive();
+    renderLive(false);
+  });
+  el("btn-live-copy").addEventListener("click", () =>
+    copyStream(state.live.entries, liveFilter(false))
+  );
+  el("btn-live-reload").addEventListener("click", () => loadLive(true));
+  el("btn-live-clear").addEventListener("click", () => {
+    state.live.entries = [];
+    renderLiveTags();
+    renderLive(true);
+  });
+
+  el("category-filter").addEventListener("input", debounce(renderTree, 200));
   el("tree").addEventListener("click", (event) => {
-    const button = event.target.closest(".lv-tree-item");
-    if (!button) return;
+    const node = event.target.closest(".lv-node");
+    if (!node) return;
     state.category = {
-      source: button.dataset.source,
-      key: button.dataset.key,
-      name: button.dataset.name,
+      source: node.dataset.source,
+      key: node.dataset.key,
+      name: node.dataset.name,
     };
     state.selected.clear();
     renderTree();
     loadFiles();
   });
-
+  el("file-filter").addEventListener("input", debounce(renderFiles, 200));
+  el("file-sort").addEventListener("change", (event) => {
+    state.sort = event.target.value;
+    renderFiles();
+  });
   el("file-rows").addEventListener("change", (event) => {
     const box = event.target.closest(".lv-check");
     if (!box) return;
     if (box.checked) state.selected.add(box.dataset.id);
     else state.selected.delete(box.dataset.id);
-    el("btn-delete").disabled = state.selected.size === 0;
-    const deletable = visibleFiles().filter((item) => item.deletable);
-    el("check-all").checked =
-      deletable.length > 0 && deletable.every((item) => state.selected.has(item.id));
+    renderFiles();
   });
-
   el("file-rows").addEventListener("click", (event) => {
-    if (event.target.closest(".lv-check")) return;
-    const row = event.target.closest("tr");
-    if (!row || !row.dataset.id) return;
-    loadContent(row.dataset.id);
+    const open = event.target.closest("[data-open]");
+    if (open) {
+      openDrawer(open.dataset.open);
+      return;
+    }
+    const grab = event.target.closest("[data-download]");
+    if (grab) downloadFile(grab.dataset.download);
   });
-
   el("check-all").addEventListener("change", (event) => {
-    const deletable = visibleFiles().filter((item) => item.deletable);
-    for (const item of deletable) {
+    for (const item of visibleFiles()) {
+      if (!item.deletable) continue;
       if (event.target.checked) state.selected.add(item.id);
       else state.selected.delete(item.id);
     }
     renderFiles();
   });
+  el("btn-delete").addEventListener("click", deleteSelected);
 
+  el("btn-search").addEventListener("click", runSearch);
+  el("search-keyword").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") runSearch();
+  });
+  el("btn-diag-refresh").addEventListener("click", loadDiagnostics);
+
+  el("drawer").addEventListener("click", (event) => {
+    if (event.target.closest("[data-close]")) closeDrawer();
+  });
   el("view-level").addEventListener("change", () => loadContent());
   el("view-tail").addEventListener("change", () => loadContent());
-  let keywordTimer = null;
-  el("view-keyword").addEventListener("input", () => {
-    if (keywordTimer) window.clearTimeout(keywordTimer);
-    keywordTimer = window.setTimeout(() => loadContent(), 400);
-  });
-
+  // Keyword filtering stays client side: no extra request per keystroke.
+  el("view-keyword").addEventListener("input", debounce(() => renderView(false), 250));
   el("view-follow").addEventListener("change", (event) => {
-    if (event.target.checked) startFollow();
-    else stopFollow(true);
+    if (event.target.checked) startViewFollow();
+    else stopViewFollow(true);
+  });
+  el("btn-view-copy").addEventListener("click", () =>
+    copyStream(state.view.entries, viewFilter(false))
+  );
+  el("btn-reload").addEventListener("click", () => loadContent());
+  el("btn-download").addEventListener("click", () => {
+    if (state.view.file) downloadFile(state.view.file.id);
   });
 
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    const drawer = el("drawer");
+    if (drawer && !drawer.hidden) closeDrawer();
+  });
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden) stopFollow(true);
-    else if (el("view-follow").checked) startFollow();
+    if (document.hidden) {
+      stopLive();
+      stopViewFollow(true);
+      return;
+    }
+    if (state.tab === "live" && el("live-follow").checked) startLive();
+    if (state.view.file && el("view-follow").checked) startViewFollow();
   });
-
-  window.addEventListener("beforeunload", () => stopFollow(true));
+  window.addEventListener("beforeunload", () => {
+    stopLive();
+    stopViewFollow(true);
+  });
 }
 
+// -- boot ------------------------------------------------------------------
+
 async function main() {
-  if (!bridge || typeof bridge.ready !== "function") {
+  if (!bridge) {
     document.body.innerHTML =
-      '<p class="lv-muted">AstrBotPluginPage bridge 不可用，请在 AstrBot Dashboard 中打开此页面。</p>';
+      "<p style=\"padding:24px;font-family:system-ui\">LogVault 需要在 AstrBot Dashboard 的插件页内打开。</p>";
     return;
   }
   await bridge.ready();
+  state.skin = readStore(STORE_SKIN, "console");
+  if (SKIN_IDS.indexOf(state.skin) === -1) state.skin = "console";
+  state.density = readStore(STORE_DENSITY, "compact") === "cozy" ? "cozy" : "compact";
+  const startTab = readStore(STORE_TAB, "overview");
+  buildSkinOptions();
+  applySkin();
+  applyDensity();
   applyStaticText();
   bindEvents();
-  // AstrBot 4.27 exposes onContext(); older builds used onContextChange().
-  const subscribe =
-    typeof bridge.onContext === "function"
-      ? bridge.onContext.bind(bridge)
-      : typeof bridge.onContextChange === "function"
-        ? bridge.onContextChange.bind(bridge)
-        : null;
-  if (subscribe) {
-    let first = true;
-    subscribe(() => {
-      applyStaticText();
+  let first = true;
+  try {
+    bridge.onContext(() => {
       if (first) {
-        // onContext() replays the current context immediately; nothing to
-        // re-render before the first load finishes.
         first = false;
         return;
       }
-      renderStats();
+      applyStaticText();
+      applySkin();
+      renderOverview();
       renderTree();
       renderFiles();
     });
+  } catch (err) {
+    /* older dashboards do not expose onContext */
   }
+  setTab(startTab);
   await loadOverview(true);
 }
 
-main().catch((err) => {
-  toast(errorText(err), "error");
-});
+main().catch((err) => toast(errorText(err), "error"));

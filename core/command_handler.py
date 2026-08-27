@@ -393,15 +393,15 @@ class CommandHandler:
     def handle_help(self) -> str:
         return (
             "📋 LogVault 命令帮助\n"
-            "├─ /logvault status              查看日志状态\n"
-            "├─ /logvault search <词>         搜索日志关键词\n"
-            "├─ /logvault clean               手动清理旧日志\n"
-            "├─ /logvault export [天]         导出最近N天日志（默认7天）\n"
-            "├─ /logvault send all [天]       发送最近N天的全部日志\n"
-            "├─ /logvault send errors [天]    发送最近N天的错误日志\n"
-            "├─ /logvault send plugin <名> [天] 发送指定插件最近N天日志\n"
-            "├─ /logplus ...                  兼容别名\n"
-            "└─ /logvault help                显示此帮助"
+            "├─ /log status              查看日志状态\n"
+            "├─ /log search <词>         搜索日志关键词\n"
+            "├─ /log clean               手动清理旧日志\n"
+            "├─ /log export [天]         导出最近N天日志（默认7天）\n"
+            "├─ /log send all [天]       发送最近N天的全部日志\n"
+            "├─ /log send errors [天]    发送最近N天的错误日志\n"
+            "├─ /log send plugin <名> [天] 发送指定插件最近N天日志\n"
+            "├─ /logvault、/logplus ...  兼容别名\n"
+            "└─ /log help                显示此帮助"
         )
 
     async def handle_send(
