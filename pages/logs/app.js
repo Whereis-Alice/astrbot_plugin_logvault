@@ -1,4 +1,4 @@
-// LogVault console (v2.2.0)
+// LogVault console (v2.3.0)
 // A tab based operations console for the plugin Web API in core/web_api.py.
 // Layout rules: every flex/grid child sets min-width:0 in style.css, so long
 // paths, plugin names and warnings truncate instead of stretching the page.
@@ -17,7 +17,8 @@ const SKIN_IDS = SKINS.map((item) => item.id);
 const STORE_SKIN = "logvault.skin";
 const STORE_DENSITY = "logvault.density";
 const STORE_TAB = "logvault.tab";
-const TABS = ["overview", "live", "files", "search", "diag"];
+const TABS = ["overview", "live", "files", "search", "export", "diag"];
+const EXPORT_LEVELS = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"];
 
 const LINE_RE =
   /^\[(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})[^\]]*\]\s*\[([A-Za-z]+)\s*\]\s*\[([^\]]*)\]\s*(?:\[([^\]]*)\])?\s*:?\s*([\s\S]*)$/;
@@ -62,6 +63,15 @@ const state = {
   live: { id: "", position: 0, entries: [], timer: null, busy: false, dropped: 0 },
   combo: { options: [], visible: [], query: "", active: -1, open: false },
   view: { file: null, position: 0, entries: [], timer: null, busy: false },
+  search: { keyword: "", results: [] },
+  exporter: {
+    levels: new Set(),
+    plan: null,
+    token: "",
+    busy: false,
+    history: [],
+    historyLoaded: false,
+  },
   toastTimer: null,
 };
 
@@ -318,6 +328,10 @@ function setTab(name) {
   if (tab === "live") startLive();
   else stopLive();
   if (tab === "diag" && !state.capture) loadDiagnostics();
+  if (tab === "export") {
+    renderExportPanel();
+    if (!state.exporter.historyLoaded) loadExportHistory();
+  }
   updateStatusBar();
 }
 
@@ -632,33 +646,202 @@ function renderDistCard() {
   body.innerHTML = '<div class="lv-bars">' + bars.join("") + "</div>";
 }
 
-function renderBundleCard() {
+// -- export tab ------------------------------------------------------------
+
+// The datalist is shared by the builder and stays in sync with the tree.
+function renderPluginOptions() {
   const list = el("plugin-options");
-  if (list) {
-    const names = Array.from(
-      new Set(
-        state.categories
-          .filter((item) => item.kind === "plugin")
-          .map((item) => item.name)
-      )
-    ).sort();
-    list.innerHTML = names
-      .map((name) => '<option value="' + esc(name) + '"></option>')
-      .join("");
-  }
+  if (!list) return;
+  const names = Array.from(
+    new Set(
+      state.categories.filter((item) => item.kind === "plugin").map((item) => item.name)
+    )
+  ).sort();
+  list.innerHTML = names
+    .map((name) => '<option value="' + esc(name) + '"></option>')
+    .join("");
+}
+
+function renderSliceNote() {
   const note = el("slice-note");
-  if (note) {
-    const slice = state.overview ? state.overview.slice_by_record_time !== false : true;
-    note.textContent = slice
-      ? t(
-          "bundle.sliceOn",
-          "按记录时间切片已开启：打包时会逐行截取指定天数内的记录，跨天的汇总日志也能精确裁剪。"
-        )
-      : t(
-          "bundle.sliceOff",
-          "按记录时间切片已关闭：只按文件修改时间筛选，命中的文件会整体打包。"
-        );
+  if (!note) return;
+  const slice = state.overview ? state.overview.slice_by_record_time !== false : true;
+  note.textContent = slice
+    ? t(
+        "export.sliceOn",
+        "按记录时间切片已开启：导出时会逐行截取时间窗内的记录，跨天的汇总日志也能精确裁剪。"
+      )
+    : t(
+        "export.sliceOff",
+        "按记录时间切片已关闭：只按文件修改时间筛选，命中的文件会整体导出。"
+      );
+}
+
+function exportScope() {
+  const select = el("export-scope");
+  return select ? select.value : "preset";
+}
+
+// Any change to the form makes the parked pre-flight (and its one shot
+// token) obsolete, so the preview is cleared instead of showing stale counts.
+function invalidateExportPlan() {
+  state.exporter.plan = null;
+  state.exporter.token = "";
+  renderExportPreview();
+}
+
+function renderExportLevels() {
+  const box = el("export-levels");
+  if (!box) return;
+  box.innerHTML = EXPORT_LEVELS.map((level) => {
+    const on = state.exporter.levels.has(level);
+    return (
+      '<button type="button" class="lv-chip' + (on ? " is-on" : "") +
+      '" data-level="' + level + '" aria-pressed="' + (on ? "true" : "false") + '">' +
+      esc(level) + "</button>"
+    );
+  }).join("");
+}
+
+function renderExportScopeNote() {
+  const note = el("export-scope-note");
+  const preset = el("export-preset-field");
+  const plugin = el("export-plugin-field");
+  const scope = exportScope();
+  if (preset) preset.hidden = scope !== "preset";
+  if (plugin) plugin.hidden = scope !== "plugin";
+  if (!note) return;
+  if (scope === "selection") {
+    note.textContent =
+      state.selected.size > 0
+        ? t("export.noteSelection", "将导出日志文件页勾选的文件") +
+          " (" + state.selected.size + ")"
+        : t("export.noteSelectionEmpty", "日志文件页还没有勾选任何文件");
+    return;
   }
+  if (scope === "category") {
+    note.textContent = state.category
+      ? t("export.noteCategory", "将导出当前分类") + ": " + state.category.name
+      : t("export.noteCategoryEmpty", "请先在日志文件页选择一个分类");
+    return;
+  }
+  if (scope === "plugin") {
+    note.textContent = t("export.notePlugin", "按插件名匹配其专属目录与共享日志中的相关记录");
+    return;
+  }
+  note.textContent = t("export.notePreset", "预设范围覆盖全部已登记的日志来源");
+}
+
+function renderExportPreview() {
+  const box = el("export-preview");
+  const pill = el("export-pill");
+  const plan = state.exporter.plan;
+  if (pill) pill.textContent = plan ? plan.files + " " + t("unit.file", "个") : "";
+  if (!box) return;
+  if (!plan) {
+    box.innerHTML =
+      '<p class="lv-empty">' + esc(t("export.previewHint", "点击预检，先看看会导出什么")) + "</p>";
+    return;
+  }
+  const rows = [
+    [t("export.rowRange", "范围"), plan.title || "-"],
+    [
+      t("export.rowFiles", "文件"),
+      plan.files + " " + t("unit.file", "个") + " · " + formatSize(plan.bytes),
+    ],
+    [
+      t("export.rowTrimmed", "逐行裁剪"),
+      plan.trimmed
+        ? plan.trimmed + " " + t("unit.file", "个")
+        : t("export.none", "无"),
+    ],
+    [
+      t("export.rowFormat", "格式"),
+      plan.format === "merged" ? t("export.formatMerged", "合并 TXT") : t("export.formatZip", "ZIP 压缩包"),
+    ],
+    [
+      t("export.rowMask", "脱敏"),
+      plan.mask
+        ? t("export.maskOn", "已开启")
+        : plan.masking_available === false
+          ? t("export.maskUnavailable", "脱敏组件未启用")
+          : t("export.maskOff", "已关闭"),
+    ],
+  ];
+  const filters = [];
+  if (plan.levels && plan.levels.length) filters.push(plan.levels.join(" / "));
+  if (plan.keyword) filters.push(t("export.keyword", "关键词") + ": " + plan.keyword);
+  rows.push([
+    t("export.rowFilter", "内容过滤"),
+    filters.length ? filters.join(" · ") : t("export.none", "无"),
+  ]);
+  let html = kvHtml(rows);
+  const warnings = asList({ warnings: plan.warnings }, "warnings");
+  if (warnings.length) {
+    html +=
+      '<ul class="lv-list lv-list-warn">' +
+      warnings.map((item) => "<li>" + esc(item) + "</li>").join("") +
+      "</ul>";
+  }
+  if (!plan.files) {
+    html +=
+      '<p class="lv-note">' +
+      esc(t("export.emptyPlan", "当前条件没有命中任何文件，请放宽时间窗或过滤条件。")) +
+      "</p>";
+  }
+  box.innerHTML = html;
+}
+
+function renderExportHistory() {
+  const box = el("export-history");
+  const pill = el("export-history-pill");
+  const purge = el("btn-export-purge");
+  const items = state.exporter.history;
+  const total = items.reduce((sum, item) => sum + (item.size || 0), 0);
+  if (pill) pill.textContent = items.length ? items.length + " · " + formatSize(total) : "";
+  if (purge) purge.disabled = items.length === 0;
+  if (!box) return;
+  if (!items.length) {
+    box.innerHTML =
+      '<p class="lv-empty">' + esc(t("export.historyEmpty", "还没有生成过导出包")) + "</p>";
+    return;
+  }
+  box.innerHTML =
+    '<div class="lv-hlist">' +
+    items
+      .map((item) => {
+        const label = item.format === "merged" ? "TXT" : "ZIP";
+        return (
+          '<div class="lv-hrow">' +
+          '<span class="lv-hrow-main"><span class="lv-hrow-name" title="' +
+          esc(item.name) + '">' + esc(item.name) + "</span>" +
+          '<span class="lv-hrow-meta">' +
+          '<span class="lv-badge" data-kind="info">' + label + "</span> " +
+          esc(formatSize(item.size) + " · " + formatTime(item.mtime)) +
+          "</span></span>" +
+          '<span class="lv-hrow-act">' +
+          '<button type="button" class="lv-btn lv-btn-ghost lv-btn-mini" data-grab="' +
+          esc(item.name) + '">' + esc(t("action.download", "下载")) + "</button>" +
+          '<button type="button" class="lv-btn lv-btn-ghost lv-btn-mini" data-drop="' +
+          esc(item.name) + '">' + esc(t("action.delete2", "删除")) + "</button>" +
+          "</span></div>"
+        );
+      })
+      .join("") +
+    "</div>";
+}
+
+function renderExportPanel() {
+  renderPluginOptions();
+  renderSliceNote();
+  renderExportScopeNote();
+  renderExportLevels();
+  renderExportPreview();
+  renderExportHistory();
+  const run = el("btn-export-run");
+  if (run) run.disabled = state.exporter.busy;
+  const plan = el("btn-export-plan");
+  if (plan) plan.disabled = state.exporter.busy;
 }
 
 function updateStatusBar() {
@@ -688,7 +871,7 @@ function renderOverview() {
   renderCaptureCard();
   renderSourcesCard();
   renderDistCard();
-  renderBundleCard();
+  renderExportPanel();
   updateStatusBar();
 }
 
@@ -859,6 +1042,15 @@ function renderFiles() {
         ? t("action.delete", "删除所选") + " (" + state.selected.size + ")"
         : t("action.delete", "删除所选");
   }
+  const share = el("btn-export-files");
+  if (share) {
+    share.disabled = state.selected.size === 0;
+    share.textContent =
+      state.selected.size > 0
+        ? t("action.exportSelected", "导出所选") + " (" + state.selected.size + ")"
+        : t("action.exportSelected", "导出所选");
+  }
+  if (state.tab === "export") renderExportScopeNote();
   const scope = el("file-scope");
   if (scope) {
     const text = state.category
@@ -1350,9 +1542,13 @@ async function runSearch() {
   const limit = Math.max(10, Math.min(Number(el("search-limit").value) || 100, 500));
   meta.textContent = t("search.working", "正在搜索...");
   box.innerHTML = "";
+  state.search = { keyword, results: [] };
+  syncSearchExport();
   try {
     const data = await apiGet("search", { keyword, limit });
-    const results = asList(data, "results");
+    const results = asList(data, "results").map((row) => String(row));
+    state.search = { keyword, results };
+    syncSearchExport();
     meta.textContent =
       t("search.result", "命中") + " " + results.length + " / " + (data.total || 0);
     if (!results.length) {
@@ -1373,6 +1569,17 @@ async function runSearch() {
     meta.textContent = "";
     toast(errorText(err), "error");
   }
+}
+
+function syncSearchExport() {
+  const button = el("btn-export-search");
+  if (!button) return;
+  const total = state.search.results.length;
+  button.disabled = total === 0;
+  button.textContent =
+    total > 0
+      ? t("action.exportHits", "导出结果") + " (" + total + ")"
+      : t("action.exportHits", "导出结果");
 }
 
 // -- diagnostics tab -------------------------------------------------------
@@ -1529,37 +1736,228 @@ function stamp() {
   );
 }
 
-async function downloadBundle() {
-  const scope = el("bundle-target").value;
-  let target = scope;
-  if (scope === "plugin") {
-    target = (el("bundle-plugin").value || "").trim();
-    if (!target) {
+// Client side download for views that are already in memory (search hits,
+// the live stream). Server bundles go through bridge.download instead.
+function saveText(name, text) {
+  try {
+    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = name;
+    link.style.display = "none";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.setTimeout(() => URL.revokeObjectURL(url), 4000);
+    return true;
+  } catch (err) {
+    toast(errorText(err), "error");
+    return false;
+  }
+}
+
+// -- export actions --------------------------------------------------------
+
+function exportDays() {
+  const input = el("export-days");
+  const raw = String(input ? input.value : "").trim();
+  if (raw === "") return 7;
+  const days = Math.max(0, Math.min(Number(raw) || 0, 3650));
+  if (input) input.value = days;
+  return days;
+}
+
+// Builds the ExportSpec payload consumed by export_plan. Returns null when a
+// required field is missing, after pointing the user at it.
+function exportPayload() {
+  const scope = exportScope();
+  const body = {
+    scope,
+    format: el("export-format").value,
+    mask: el("export-mask").checked,
+    keyword: (el("export-keyword").value || "").trim(),
+    levels: EXPORT_LEVELS.filter((level) => state.exporter.levels.has(level)),
+    since: el("export-since").value || "",
+    until: el("export-until").value || "",
+    days: exportDays(),
+  };
+  if (scope === "preset") {
+    body.preset = el("export-preset").value;
+  } else if (scope === "plugin") {
+    body.plugin = (el("export-plugin").value || "").trim();
+    if (!body.plugin) {
       toast(t("toast.needPlugin", "请填写插件名"), "error");
-      el("bundle-plugin").focus();
-      return;
+      el("export-plugin").focus();
+      return null;
+    }
+  } else if (scope === "category") {
+    if (!state.category) {
+      toast(t("toast.needCategory", "请先在日志文件页选择分类"), "error");
+      return null;
+    }
+    body.source = state.category.source;
+    body.category = state.category.key;
+  } else if (scope === "selection") {
+    body.ids = Array.from(state.selected).slice(0, 500);
+    if (!body.ids.length) {
+      toast(t("toast.needSelection", "请先在日志文件页勾选文件"), "error");
+      return null;
     }
   }
-  const days = Math.max(1, Math.min(Number(el("bundle-days").value) || 7, 3650));
-  el("bundle-days").value = days;
-  const hint = el("bundle-hint");
-  const button = el("btn-bundle");
-  button.disabled = true;
-  if (hint) hint.textContent = t("bundle.working", "正在打包，请稍候...");
-  const safe = target.replace(/[^A-Za-z0-9_.-]+/g, "_");
+  return body;
+}
+
+function exportFileName(plan) {
+  const fmt = (plan && plan.format) || el("export-format").value;
+  return "logvault_export_" + stamp() + (fmt === "merged" ? ".txt" : ".zip");
+}
+
+function setExportBusy(busy, hint) {
+  state.exporter.busy = busy;
+  for (const id of ["btn-export-plan", "btn-export-run"]) {
+    const button = el(id);
+    if (button) button.disabled = busy;
+  }
+  const box = el("export-hint");
+  if (box) box.textContent = hint || "";
+}
+
+// Pre-flight: counts members without writing, and parks a one shot token so
+// the follow up GET can stream the bundle (bridge.download cannot POST).
+async function planExport(quiet) {
+  const body = exportPayload();
+  if (!body) return null;
+  setExportBusy(true, t("export.planning", "正在预检..."));
   try {
-    await bridge.download(
-      "bundle",
-      { target, days },
-      "logvault_" + safe + "_" + days + "d_" + stamp() + ".zip"
-    );
-    if (hint) hint.textContent = t("bundle.done", "打包完成");
-    toast(t("toast.bundled", "已开始下载压缩包"));
+    const plan = await apiPost("export_plan", body);
+    state.exporter.plan = plan;
+    state.exporter.token = plan.token || "";
+    renderExportPreview();
+    if (!quiet) {
+      toast(
+        plan.files
+          ? t("toast.planned", "预检完成") + ": " + plan.files + " " + t("unit.file", "个") +
+            " · " + formatSize(plan.bytes)
+          : t("export.emptyPlan", "当前条件没有命中任何文件，请放宽时间窗或过滤条件。"),
+        plan.files ? "ok" : "error"
+      );
+    }
+    setExportBusy(false, "");
+    return plan;
   } catch (err) {
-    if (hint) hint.textContent = "";
+    state.exporter.plan = null;
+    state.exporter.token = "";
+    renderExportPreview();
+    setExportBusy(false, "");
     toast(errorText(err), "error");
-  } finally {
-    button.disabled = false;
+    return null;
+  }
+}
+
+async function runExport() {
+  // Always re-plan: the token is single use and the form may have changed.
+  const plan = await planExport(true);
+  if (!plan) return;
+  if (!plan.files || !state.exporter.token) {
+    toast(t("export.emptyPlan", "当前条件没有命中任何文件，请放宽时间窗或过滤条件。"), "error");
+    return;
+  }
+  const token = state.exporter.token;
+  state.exporter.token = "";
+  setExportBusy(true, t("export.working", "正在生成导出包..."));
+  try {
+    await bridge.download("export_file", { token }, exportFileName(plan));
+    setExportBusy(false, t("export.done", "导出完成"));
+    toast(t("toast.exported", "已开始下载导出包"));
+    await loadExportHistory();
+  } catch (err) {
+    setExportBusy(false, "");
+    toast(errorText(err), "error");
+  }
+}
+
+async function loadExportHistory() {
+  try {
+    const data = await apiGet("export_history");
+    state.exporter.history = asList(data, "exports");
+    state.exporter.historyLoaded = true;
+  } catch (err) {
+    state.exporter.history = [];
+  }
+  renderExportHistory();
+}
+
+async function downloadExport(name) {
+  try {
+    await bridge.download("export_download", { name }, name);
+  } catch (err) {
+    toast(errorText(err), "error");
+  }
+}
+
+async function purgeExports(names, all) {
+  const question = all
+    ? t("confirm.purgeAll", "清空全部导出包？该操作不可恢复。")
+    : t("confirm.purge", "删除该导出包？");
+  if (!window.confirm(question)) return;
+  try {
+    const result = await apiPost("export_purge", all ? { all: true } : { names });
+    toast(
+      t("toast.deleted", "已删除") + " " + (result.deleted || 0) + " · " +
+        t("toast.freed", "释放") + " " + formatSize(result.freed_bytes)
+    );
+  } catch (err) {
+    toast(errorText(err), "error");
+  }
+  await loadExportHistory();
+}
+
+// Jumps to the export tab with the scope pre-selected, then pre-flights it.
+function exportWithScope(scope) {
+  const select = el("export-scope");
+  if (select) select.value = scope;
+  setTab("export");
+  renderExportScopeNote();
+  planExport(false);
+}
+
+function exportSearchHits() {
+  const rows = state.search.results;
+  if (!rows.length) {
+    toast(t("toast.nothingToExport", "没有可导出的内容"), "error");
+    return;
+  }
+  const header = [
+    "# LogVault search export",
+    "# keyword: " + state.search.keyword,
+    "# hits: " + rows.length,
+    "# generated: " + new Date().toLocaleString(),
+    "",
+  ].join("\n");
+  if (saveText("logvault_search_" + stamp() + ".txt", header + rows.join("\n") + "\n")) {
+    toast(t("toast.exported", "已开始下载导出包"));
+  }
+}
+
+function exportLiveView() {
+  const filter = liveFilter(false);
+  const rows = state.live.entries
+    .filter((entry) => entryPasses(entry, filter))
+    .map((entry) => entry.raw);
+  if (!rows.length) {
+    toast(t("toast.nothingToExport", "没有可导出的内容"), "error");
+    return;
+  }
+  const header = [
+    "# LogVault live view export",
+    "# file: " + (el("live-file").value || "-"),
+    "# lines: " + rows.length,
+    "# generated: " + new Date().toLocaleString(),
+    "",
+  ].join("\n");
+  if (saveText("logvault_live_" + stamp() + ".txt", header + rows.join("\n") + "\n")) {
+    toast(t("toast.exported", "已开始下载导出包"));
   }
 }
 
@@ -1621,7 +2019,8 @@ async function cleanNow() {
 // -- static text -----------------------------------------------------------
 
 const PLACEHOLDERS = [
-  ["bundle-plugin", "placeholder.plugin"],
+  ["export-plugin", "placeholder.plugin"],
+  ["export-keyword", "placeholder.exportKeyword"],
   ["live-keyword", "placeholder.liveKeyword"],
   ["live-file-input", "placeholder.liveFile"],
   ["category-filter", "placeholder.category"],
@@ -1707,12 +2106,53 @@ function bindEvents() {
       : t("action.collapse", "收起");
   });
 
-  el("bundle-target").addEventListener("change", (event) => {
-    el("bundle-plugin-field").hidden = event.target.value !== "plugin";
+  el("export-scope").addEventListener("change", () => {
+    renderExportScopeNote();
+    invalidateExportPlan();
   });
-  el("btn-bundle").addEventListener("click", downloadBundle);
-  el("bundle-plugin").addEventListener("keydown", (event) => {
-    if (event.key === "Enter") downloadBundle();
+  el("export-levels").addEventListener("click", (event) => {
+    const chip = event.target.closest("[data-level]");
+    if (!chip) return;
+    const level = chip.dataset.level;
+    if (state.exporter.levels.has(level)) state.exporter.levels.delete(level);
+    else state.exporter.levels.add(level);
+    renderExportLevels();
+    invalidateExportPlan();
+  });
+  for (const id of [
+    "export-preset",
+    "export-plugin",
+    "export-format",
+    "export-days",
+    "export-since",
+    "export-until",
+    "export-mask",
+  ]) {
+    const node = el(id);
+    if (node) node.addEventListener("change", invalidateExportPlan);
+  }
+  el("export-keyword").addEventListener("input", debounce(invalidateExportPlan, 250));
+  el("btn-export-window").addEventListener("click", () => {
+    el("export-since").value = "";
+    el("export-until").value = "";
+    el("export-days").value = 7;
+    invalidateExportPlan();
+  });
+  el("btn-export-plan").addEventListener("click", () => planExport(false));
+  el("btn-export-run").addEventListener("click", runExport);
+  el("export-plugin").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") planExport(false);
+  });
+  el("btn-export-reload").addEventListener("click", loadExportHistory);
+  el("btn-export-purge").addEventListener("click", () => purgeExports([], true));
+  el("export-history").addEventListener("click", (event) => {
+    const grab = event.target.closest("[data-grab]");
+    if (grab) {
+      downloadExport(grab.dataset.grab);
+      return;
+    }
+    const drop = event.target.closest("[data-drop]");
+    if (drop) purgeExports([drop.dataset.drop], false);
   });
 
   el("live-file").addEventListener("change", () => {
@@ -1784,6 +2224,7 @@ function bindEvents() {
     copyStream(state.live.entries, liveFilter(false))
   );
   el("btn-live-reload").addEventListener("click", () => loadLive(true));
+  el("btn-live-export").addEventListener("click", exportLiveView);
   el("btn-live-clear").addEventListener("click", () => {
     state.live.entries = [];
     renderLiveTags();
@@ -1833,8 +2274,11 @@ function bindEvents() {
     renderFiles();
   });
   el("btn-delete").addEventListener("click", deleteSelected);
+  el("btn-export-files").addEventListener("click", () => exportWithScope("selection"));
+  el("btn-export-category").addEventListener("click", () => exportWithScope("category"));
 
   el("btn-search").addEventListener("click", runSearch);
+  el("btn-export-search").addEventListener("click", exportSearchHits);
   el("search-keyword").addEventListener("keydown", (event) => {
     if (event.key === "Enter") runSearch();
   });

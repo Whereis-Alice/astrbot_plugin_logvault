@@ -48,6 +48,9 @@
         <button class="lv-tab" type="button" role="tab" data-tab="search" aria-selected="false">
           <span class="lv-tab-ico" aria-hidden="true">⌕</span><span data-i18n="tab.search">全局搜索</span>
         </button>
+        <button class="lv-tab" type="button" role="tab" data-tab="export" aria-selected="false">
+          <span class="lv-tab-ico" aria-hidden="true">⤓</span><span data-i18n="tab.export">导出中心</span>
+        </button>
         <button class="lv-tab" type="button" role="tab" data-tab="diag" aria-selected="false">
           <span class="lv-tab-ico" aria-hidden="true">◈</span><span data-i18n="tab.diag">采集诊断</span>
         </button>
@@ -79,35 +82,6 @@
               <span id="dist-total" class="lv-pill"></span>
             </header>
             <div id="dist-body" class="lv-card-body"></div>
-          </article>
-          <article class="lv-card">
-            <header class="lv-card-head">
-              <h2 data-i18n="card.bundle">打包导出</h2>
-            </header>
-            <div class="lv-card-body">
-              <div class="lv-toolbar">
-                <div class="lv-field">
-                  <label for="bundle-target" data-i18n="bundle.scope">范围</label>
-                  <select id="bundle-target" class="lv-input">
-                    <option value="all" data-i18n="bundle.all">全部日志</option>
-                    <option value="errors" data-i18n="bundle.errors">仅错误日志</option>
-                    <option value="plugin" data-i18n="bundle.plugin">指定插件</option>
-                  </select>
-                </div>
-                <div class="lv-field" id="bundle-plugin-field" hidden>
-                  <label for="bundle-plugin" data-i18n="bundle.pluginName">插件</label>
-                  <input id="bundle-plugin" class="lv-input" type="text" list="plugin-options" placeholder="插件名" />
-                  <datalist id="plugin-options"></datalist>
-                </div>
-                <div class="lv-field">
-                  <label for="bundle-days" data-i18n="bundle.days">最近天数</label>
-                  <input id="bundle-days" class="lv-input lv-input-num" type="number" min="1" max="3650" value="7" />
-                </div>
-                <button id="btn-bundle" class="lv-btn lv-btn-primary" type="button" data-i18n="action.bundle">下载 ZIP</button>
-                <span id="bundle-hint" class="lv-muted"></span>
-              </div>
-              <p class="lv-note" id="slice-note"></p>
-            </div>
           </article>
         </section>
 
@@ -150,6 +124,7 @@
             </label>
             <button id="btn-live-copy" class="lv-btn lv-btn-ghost" type="button" data-i18n="action.copy">复制</button>
             <button id="btn-live-reload" class="lv-btn lv-btn-ghost" type="button" data-i18n="action.reload">重载</button>
+            <button id="btn-live-export" class="lv-btn lv-btn-ghost" type="button" data-i18n="action.exportView">导出视图</button>
             <button id="btn-live-clear" class="lv-btn lv-btn-ghost" type="button" data-i18n="action.clearView">清屏</button>
           </div>
           <div id="live-stream" class="lv-stream" tabindex="0" aria-live="polite"></div>
@@ -162,6 +137,7 @@
               <div class="lv-side-head">
                 <h2 data-i18n="files.categories">分类</h2>
                 <input id="category-filter" class="lv-input" type="search" placeholder="过滤分类" />
+                <button id="btn-export-category" class="lv-btn lv-btn-ghost lv-btn-mini" type="button" data-i18n="action.exportCategory">导出此分类</button>
               </div>
               <div id="tree" class="lv-tree" role="tree"></div>
             </aside>
@@ -176,6 +152,7 @@
                   <option value="size" data-i18n="files.sortSize">按大小</option>
                   <option value="name" data-i18n="files.sortName">按名称</option>
                 </select>
+                <button id="btn-export-files" class="lv-btn lv-btn-ghost" type="button" disabled data-i18n="action.exportSelected">导出所选</button>
                 <button id="btn-delete" class="lv-btn lv-btn-danger" type="button" disabled data-i18n="action.delete">删除所选</button>
               </div>
               <div class="lv-tablewrap">
@@ -209,11 +186,104 @@
               <input id="search-limit" class="lv-input lv-input-num" type="number" min="10" max="500" step="10" value="100" />
             </div>
             <button id="btn-search" class="lv-btn lv-btn-primary" type="button" data-i18n="action.search">搜索</button>
+            <button id="btn-export-search" class="lv-btn lv-btn-ghost" type="button" disabled data-i18n="action.exportHits">导出结果</button>
             <span id="search-meta" class="lv-muted"></span>
           </div>
           <div id="search-results" class="lv-results"></div>
         </section>
 
+        <section class="lv-panel" id="panel-export" role="tabpanel" hidden>
+          <div class="lv-export">
+            <article class="lv-card lv-export-builder">
+              <header class="lv-card-head">
+                <h2 data-i18n="export.builder">导出构建器</h2>
+                <span id="export-pill" class="lv-pill"></span>
+              </header>
+              <div class="lv-card-body lv-stack">
+                <div class="lv-toolbar">
+                  <div class="lv-field">
+                    <label for="export-scope" data-i18n="export.scope">范围</label>
+                    <select id="export-scope" class="lv-input">
+                      <option value="preset" data-i18n="export.scopePreset">预设范围</option>
+                      <option value="category" data-i18n="export.scopeCategory">当前分类</option>
+                      <option value="selection" data-i18n="export.scopeSelection">已勾选文件</option>
+                      <option value="plugin" data-i18n="export.scopePlugin">指定插件</option>
+                    </select>
+                  </div>
+                  <div class="lv-field" id="export-preset-field">
+                    <label for="export-preset" data-i18n="export.preset">预设</label>
+                    <select id="export-preset" class="lv-input">
+                      <option value="all" data-i18n="export.presetAll">全部日志</option>
+                      <option value="errors" data-i18n="export.presetErrors">仅错误日志</option>
+                      <option value="core" data-i18n="export.presetCore">核心日志</option>
+                    </select>
+                  </div>
+                  <div class="lv-field lv-field-grow" id="export-plugin-field" hidden>
+                    <label for="export-plugin" data-i18n="export.plugin">插件</label>
+                    <input id="export-plugin" class="lv-input" type="text" list="plugin-options" placeholder="插件名" autocomplete="off" />
+                    <datalist id="plugin-options"></datalist>
+                  </div>
+                  <div class="lv-field">
+                    <label for="export-format" data-i18n="export.format">格式</label>
+                    <select id="export-format" class="lv-input">
+                      <option value="zip" data-i18n="export.formatZip">ZIP 压缩包</option>
+                      <option value="merged" data-i18n="export.formatMerged">合并 TXT</option>
+                    </select>
+                  </div>
+                </div>
+                <p class="lv-note" id="export-scope-note"></p>
+                <div class="lv-toolbar">
+                  <div class="lv-field">
+                    <label for="export-days" data-i18n="export.days">最近天数</label>
+                    <input id="export-days" class="lv-input lv-input-num" type="number" min="0" max="3650" value="7" />
+                  </div>
+                  <div class="lv-field">
+                    <label for="export-since" data-i18n="export.since">起始日期</label>
+                    <input id="export-since" class="lv-input" type="date" />
+                  </div>
+                  <div class="lv-field">
+                    <label for="export-until" data-i18n="export.until">结束日期</label>
+                    <input id="export-until" class="lv-input" type="date" />
+                  </div>
+                  <button id="btn-export-window" class="lv-btn lv-btn-ghost lv-btn-mini" type="button" data-i18n="action.clearWindow">清除时间</button>
+                </div>
+                <div class="lv-fieldset">
+                  <span class="lv-fieldset-title" data-i18n="export.levels">级别过滤</span>
+                  <div id="export-levels" class="lv-chips" role="group"></div>
+                </div>
+                <div class="lv-toolbar">
+                  <div class="lv-field lv-field-grow">
+                    <label for="export-keyword" data-i18n="export.keyword">关键词</label>
+                    <input id="export-keyword" class="lv-input" type="search" placeholder="只保留包含该关键词的行" />
+                  </div>
+                  <label class="lv-switch">
+                    <input id="export-mask" type="checkbox" checked />
+                    <span class="lv-switch-track" aria-hidden="true"><i></i></span>
+                    <span data-i18n="export.mask">导出前脱敏</span>
+                  </label>
+                </div>
+                <div class="lv-toolbar lv-toolbar-end">
+                  <button id="btn-export-plan" class="lv-btn lv-btn-ghost" type="button" data-i18n="action.exportPlan">预检</button>
+                  <button id="btn-export-run" class="lv-btn lv-btn-primary" type="button" data-i18n="action.exportRun">开始导出</button>
+                  <span id="export-hint" class="lv-muted"></span>
+                </div>
+                <div id="export-preview" class="lv-preview" aria-live="polite"></div>
+                <p class="lv-note" id="slice-note"></p>
+              </div>
+            </article>
+            <article class="lv-card lv-export-history">
+              <header class="lv-card-head">
+                <h2 data-i18n="export.history">导出历史</h2>
+                <span class="lv-head-actions">
+                  <span id="export-history-pill" class="lv-pill"></span>
+                  <button id="btn-export-reload" class="lv-btn lv-btn-ghost lv-btn-mini" type="button" data-i18n="action.reload">重载</button>
+                  <button id="btn-export-purge" class="lv-btn lv-btn-danger lv-btn-mini" type="button" data-i18n="action.purgeAll">清空</button>
+                </span>
+              </header>
+              <div id="export-history" class="lv-card-body"></div>
+            </article>
+          </div>
+        </section>
         <section class="lv-panel" id="panel-diag" role="tabpanel" hidden>
           <div class="lv-grid-2">
             <article class="lv-card">

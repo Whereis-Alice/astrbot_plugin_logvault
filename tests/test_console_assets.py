@@ -1,4 +1,4 @@
-"""Consistency tests for the 2.2.0 console assets and the /log command entry."""
+"""Consistency tests for the 2.3.0 console assets and the /log command entry."""
 
 import json
 import re
@@ -124,6 +124,69 @@ class ConsoleAssetTests(unittest.TestCase):
         self.assertEqual(4, toolbar.count('class="lv-field'))
 
 
+    def test_export_centre_has_its_own_panel(self):
+        # 2.3.0 moved the bundle card out of the overview into a dedicated tab,
+        # so the old identifiers must be gone and the new ones present.
+        self.assertNotIn('id="btn-bundle"', self.html)
+        self.assertNotIn('id="bundle-target"', self.html)
+        self.assertNotIn('data-tab="export"', self.html.split('id="panel-', 1)[1])
+        for ident in (
+            "panel-export",
+            "export-scope",
+            "export-preset",
+            "export-plugin",
+            "export-format",
+            "export-days",
+            "export-since",
+            "export-until",
+            "export-levels",
+            "export-keyword",
+            "export-mask",
+            "export-preview",
+            "export-history",
+            "btn-export-plan",
+            "btn-export-run",
+            "btn-export-reload",
+            "btn-export-purge",
+        ):
+            self.assertIn(f'id="{ident}"', self.html)
+
+    def test_export_shortcuts_exist_on_the_other_tabs(self):
+        # Every browsing surface offers a one-click hand-off to the exporter.
+        for ident in (
+            "btn-export-files",
+            "btn-export-category",
+            "btn-export-search",
+            "btn-live-export",
+        ):
+            self.assertIn(f'id="{ident}"', self.html)
+
+    def test_every_export_button_is_translated(self):
+        buttons = [
+            tag
+            for tag in re.findall(r"<button[^>]*>", self.html)
+            if re.search(r'id="(btn-export[^"]+|btn-live-export)"', tag)
+        ]
+        self.assertGreaterEqual(len(buttons), 6)
+        self.assertTrue(buttons)
+        for markup in buttons:
+            self.assertIn("data-i18n=", markup)
+
+    def test_export_widgets_are_styled(self):
+        for selector in (".lv-export{", ".lv-chip{", ".lv-preview{", ".lv-hrow{"):
+            self.assertIn(selector, self.css)
+        # The two-column layout has to collapse on narrow consoles.
+        self.assertIn(".lv-export{grid-template-columns:minmax(0,1fr);}", self.css)
+
+    def test_export_levels_are_rendered_from_the_script(self):
+        self.assertIn("EXPORT_LEVELS", self.js)
+        for level in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
+            self.assertIn(level, self.js)
+        # Downloads must go through the one-shot token endpoint.
+        self.assertIn('"export_file"', self.js)
+        self.assertIn('"export_plan"', self.js)
+
+
 class TranslationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -163,7 +226,10 @@ class TranslationTests(unittest.TestCase):
             if key.startswith("pages.logs.")
         }
         expected = (
-            [f"tab.{name}" for name in ("overview", "live", "files", "search", "diag")]
+            [
+                f"tab.{name}"
+                for name in ("overview", "live", "files", "search", "export", "diag")
+            ]
             + [f"kind.{name}" for name in ("all", "builtin", "plugin", "other")]
             + [
                 f"skin.{name}"

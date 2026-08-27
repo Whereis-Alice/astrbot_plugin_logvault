@@ -24,7 +24,7 @@ from .core.web_api import LogVaultWebApi
 
 
 PLUGIN_ID = "astrbot_plugin_logvault"
-PLUGIN_VERSION = "2.2.0"
+PLUGIN_VERSION = "2.3.0"
 LEGACY_PLUGIN_ID = "astrbot_plugin_logplus"
 LOG_LEVELS = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40, "CRITICAL": 50}
 ASTRBOT_PLUGIN_LOGGER_PREFIX = "astrbot.plugin."
@@ -485,6 +485,7 @@ class LogVaultPlugin(Star):
                 host_log_dirs=self._host_log_dirs(),
                 sensitive_filter=self.sensitive_filter,
                 slice_by_record_time=bool(config.get("slice_by_record_time", True)),
+                mask_on_export=bool(config.get("mask_on_export", True)),
             )
             self._web_routes = self.web_api.register(PLUGIN_ID)
             legacy_note = len(self.command_handler.additional_data_dirs)
@@ -614,14 +615,18 @@ class LogVaultPlugin(Star):
         yield event.plain_result(await self.command_handler.handle_clean())
 
     @log.command("export")
-    async def cmd_export(self, event: AstrMessageEvent, days: str = ""):
-        """导出最近指定天数的日志。"""
+    async def cmd_export(
+        self, event: AstrMessageEvent, days: str = "", until: str = ""
+    ):
+        """导出日志：``[天数]``、``0`` 表示不限，或 ``<起始日期> [结束日期]``。"""
         if not self.command_handler:
             yield event.plain_result("❌ 插件尚未初始化完成")
             return
-        # days stays a str so a typo answers with our own hint instead of
-        # making AstrBot's argument parser raise a conversion error.
-        yield event.plain_result(await self.command_handler.handle_export(days))
+        # Both arguments stay str so a typo answers with our own hint instead
+        # of making AstrBot's argument parser raise a conversion error.
+        yield event.plain_result(
+            await self.command_handler.handle_export(days, until)
+        )
 
     @log.command("help")
     async def cmd_help(self, event: AstrMessageEvent):

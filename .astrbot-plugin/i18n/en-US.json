@@ -6,32 +6,28 @@
   "pages": {
     "logs": {
       "action": {
-        "bundle": "Download ZIP",
         "clean": "Clean now",
         "clearView": "Clear",
+        "clearWindow": "Clear window",
         "close": "Close",
         "collapse": "Collapse",
         "copy": "Copy",
         "delete": "Delete selected",
+        "delete2": "Delete",
         "download": "Download",
         "expand": "Expand",
+        "exportCategory": "Export category",
+        "exportHits": "Export hits",
+        "exportPlan": "Pre-flight",
+        "exportRun": "Start export",
+        "exportSelected": "Export selected",
+        "exportView": "Export view",
+        "purgeAll": "Purge all",
         "recheck": "Re-check",
         "refresh": "Refresh",
         "reload": "Reload",
         "search": "Search",
         "view": "View"
-      },
-      "bundle": {
-        "all": "All logs",
-        "days": "Recent days",
-        "done": "Archive ready",
-        "errors": "Errors only",
-        "plugin": "Single plugin",
-        "pluginName": "Plugin",
-        "scope": "Scope",
-        "sliceOff": "Record-time slicing is off: only file mtime is used, so matching files are archived whole.",
-        "sliceOn": "Record-time slicing is on: records inside the requested window are cut line by line, so multi-day aggregate logs are trimmed precisely.",
-        "working": "Building the archive..."
       },
       "capture": {
         "attached": "Attached loggers",
@@ -46,7 +42,6 @@
         "version": "Plugin version"
       },
       "card": {
-        "bundle": "Export archive",
         "capture": "Capture pipeline",
         "dist": "Category usage",
         "sources": "Log sources"
@@ -57,7 +52,9 @@
       },
       "confirm": {
         "clean": "Run compression and cleanup now? Expired logs will be deleted.",
-        "delete": "Delete the selected log files? This cannot be undone."
+        "delete": "Delete the selected log files? This cannot be undone.",
+        "purge": "Delete this bundle?",
+        "purgeAll": "Purge every export bundle? This cannot be undone."
       },
       "density": {
         "compact": "Compact",
@@ -81,6 +78,53 @@
       },
       "error": {
         "request": "Request failed"
+      },
+      "export": {
+        "builder": "Export builder",
+        "days": "Recent days",
+        "done": "Export ready",
+        "emptyPlan": "Nothing matched the current filters. Widen the time window or relax the filters.",
+        "format": "Format",
+        "formatMerged": "Merged TXT",
+        "formatZip": "ZIP archive",
+        "history": "Export history",
+        "historyEmpty": "No bundle has been generated yet",
+        "keyword": "Keyword",
+        "levels": "Level filter",
+        "mask": "Mask before export",
+        "maskOff": "Off",
+        "maskOn": "On",
+        "maskUnavailable": "Masking is not enabled",
+        "none": "None",
+        "noteCategory": "Exports the category currently selected",
+        "noteCategoryEmpty": "Pick a category on the log files tab first",
+        "notePlugin": "Matches the plugin own directory and picks its records out of shared logs",
+        "notePreset": "Presets cover every registered log source",
+        "noteSelection": "Exports the files ticked on the log files tab",
+        "noteSelectionEmpty": "No file is ticked on the log files tab",
+        "planning": "Pre-flighting...",
+        "plugin": "Plugin",
+        "preset": "Preset",
+        "presetAll": "All logs",
+        "presetCore": "Core logs",
+        "presetErrors": "Errors only",
+        "previewHint": "Run the pre-flight to see what would be exported",
+        "rowFiles": "Files",
+        "rowFilter": "Content filter",
+        "rowFormat": "Format",
+        "rowMask": "Masking",
+        "rowRange": "Scope",
+        "rowTrimmed": "Line-trimmed",
+        "scope": "Scope",
+        "scopeCategory": "Current category",
+        "scopePlugin": "Single plugin",
+        "scopePreset": "Preset",
+        "scopeSelection": "Ticked files",
+        "since": "From",
+        "sliceOff": "Record-time slicing is off: only file mtime is used, so matching files are exported whole.",
+        "sliceOn": "Record-time slicing is on: records inside the window are cut line by line, so multi-day aggregate logs are trimmed precisely.",
+        "until": "To",
+        "working": "Building the bundle..."
       },
       "files": {
         "categories": "Categories",
@@ -128,6 +172,7 @@
       },
       "placeholder": {
         "category": "Filter categories",
+        "exportKeyword": "Keep only lines containing this keyword",
         "file": "Filter file names",
         "liveFile": "Search or pick a log file",
         "liveKeyword": "Search log content",
@@ -178,6 +223,7 @@
       },
       "tab": {
         "diag": "Diagnostics",
+        "export": "Export",
         "files": "Log files",
         "live": "Live stream",
         "overview": "Overview",
@@ -194,17 +240,21 @@
       },
       "title": "LogVault Console",
       "toast": {
-        "bundled": "Archive download started",
         "compressed": "Compressed",
         "copied": "Copied to clipboard",
         "copyFailed": "Copy failed, please select the text manually",
         "deleted": "Deleted",
+        "exported": "Bundle download started",
         "followUnsupported": "This file cannot be followed",
         "freed": "Freed",
         "liveLoaded": "Loaded the log tail",
+        "needCategory": "Pick a category on the log files tab first",
         "needKeyword": "Enter a search keyword",
         "needPlugin": "Enter a plugin name",
+        "needSelection": "Tick some files on the log files tab first",
         "nothingToCopy": "Nothing to copy",
+        "nothingToExport": "Nothing to export",
+        "planned": "Pre-flight done",
         "refreshed": "Refreshed",
         "rotated": "Log rotated, the view was reset",
         "skipped": "Skipped"

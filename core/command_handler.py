@@ -6,6 +6,7 @@ import asyncio
 import gzip
 import os
 import re
+import shutil
 import zipfile
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator, Mapping
@@ -78,6 +79,202 @@ class PluginCatalogEntry:
 PluginCatalogProvider = Callable[[], Mapping[str, Iterable[str]]]
 
 
+_LEVEL_ORDER = {
+    "TRACE": 5,
+    "DEBUG": 10,
+    "INFO": 20,
+    "SUCCESS": 25,
+    "WARN": 30,
+    "WARNING": 30,
+    "ERROR": 40,
+    "CRITICAL": 50,
+}
+
+#: Scopes an export request may use.
+_EXPORT_SCOPES = ("selection", "category", "preset", "plugin")
+#: Ready made presets, mapped to (subdirectory or None, display name).
+_EXPORT_PRESETS = {
+    "all": (None, "全部日志"),
+    "errors": ("errors", "错误日志"),
+    "core": ("core", "核心日志"),
+}
+_EXPORT_FORMATS = ("zip", "merged")
+#: Suffixes recognised as generated export bundles.
+_EXPORT_SUFFIXES = (".zip", ".txt")
+
+
+def _parse_boundary(raw, end_of_day: bool = False) -> float | None:
+    """Parse a WebUI date/datetime boundary into a POSIX timestamp."""
+
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    normalised = text.replace("/", "-").replace("T", " ").strip()
+    for pattern, date_only in (
+        ("%Y-%m-%d %H:%M:%S", False),
+        ("%Y-%m-%d %H:%M", False),
+        ("%Y-%m-%d", True),
+    ):
+        try:
+            moment = datetime.strptime(normalised, pattern)
+        except ValueError:
+            continue
+        if date_only and end_of_day:
+            moment = moment.replace(
+                hour=23, minute=59, second=59, microsecond=999999
+            )
+        return moment.timestamp()
+    raise ValueError("时间格式无法识别，请使用 YYYY-MM-DD 或 YYYY-MM-DD HH:MM")
+
+
+def _looks_like_date(raw) -> bool:
+    return bool(re.match(r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}", str(raw or "").strip()))
+
+
+@dataclass
+class ExportSpec:
+    """A normalised export request, shared by the WebUI and /log export."""
+
+    scope: str = "preset"
+    preset: str = "all"
+    ids: tuple[str, ...] = ()
+    source: str = ""
+    category: str = ""
+    plugin: str = ""
+    days: int | None = 7
+    since: float | None = None
+    until: float | None = None
+    levels: tuple[str, ...] = ()
+    keyword: str = ""
+    fmt: str = "zip"
+    mask: bool = True
+    prefix: str = "logvault_export"
+    title: str = ""
+
+    #: Hard ceiling on the ids one request may carry.
+    MAX_IDS = 500
+
+    @property
+    def content_filtered(self) -> bool:
+        """True when member bodies must be rewritten instead of copied."""
+
+        return bool(self.levels or self.keyword)
+
+    @classmethod
+    def from_payload(cls, payload: Mapping | None, default_mask: bool = True):
+        """Validate one JSON body, raising ValueError with a Chinese hint."""
+
+        data = payload if isinstance(payload, Mapping) else {}
+        scope = str(data.get("scope") or "preset").strip().casefold()
+        if scope not in _EXPORT_SCOPES:
+            raise ValueError("导出范围无效")
+
+        raw_ids = data.get("ids") or []
+        if isinstance(raw_ids, str):
+            raw_ids = [raw_ids]
+        if not isinstance(raw_ids, (list, tuple)):
+            raise ValueError("ids 必须是数组")
+        ids = tuple(str(item) for item in raw_ids if str(item or "").strip())
+        if len(ids) > cls.MAX_IDS:
+            raise ValueError(f"一次最多导出 {cls.MAX_IDS} 个文件")
+
+        preset = str(data.get("preset") or "all").strip().casefold()
+        if preset not in _EXPORT_PRESETS:
+            raise ValueError("预设范围无效")
+
+        since = _parse_boundary(data.get("since"))
+        until = _parse_boundary(data.get("until"), end_of_day=True)
+        if since is not None and until is not None and until < since:
+            raise ValueError("结束时间不能早于开始时间")
+
+        days = cls._parse_days(data.get("days"))
+
+        raw_levels = data.get("levels") or []
+        if isinstance(raw_levels, str):
+            raw_levels = [raw_levels]
+        levels: list[str] = []
+        for item in raw_levels:
+            token = str(item or "").strip().upper()
+            if not token:
+                continue
+            if token not in _LEVEL_ORDER:
+                raise ValueError(f"未知日志级别: {token}")
+            if token not in levels:
+                levels.append(token)
+
+        keyword = str(data.get("keyword") or "").strip()[:200]
+        fmt = str(data.get("format") or data.get("fmt") or "zip").strip().casefold()
+        if fmt not in _EXPORT_FORMATS:
+            raise ValueError("导出格式无效")
+
+        raw_mask = data.get("mask")
+        mask = bool(default_mask) if raw_mask is None else cls._parse_bool(raw_mask)
+
+        return cls(
+            scope=scope,
+            preset=preset,
+            ids=ids,
+            source=str(data.get("source") or "").strip(),
+            category=str(data.get("category") or "").strip(),
+            plugin=str(data.get("plugin") or "").strip(),
+            days=days,
+            since=since,
+            until=until,
+            levels=tuple(levels),
+            keyword=keyword,
+            fmt=fmt,
+            mask=mask,
+        )
+
+    @staticmethod
+    def _parse_bool(value) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        token = str(value or "").strip().casefold()
+        return token in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _parse_days(value) -> int | None:
+        """Return the day window, or None for "no limit"."""
+
+        if value is None:
+            return 7
+        if isinstance(value, bool):
+            raise ValueError("天数必须是正整数")
+        token = str(value).strip().casefold()
+        if token == "":
+            return 7
+        if token in {"0", "all", "any", "unlimited", "不限", "全部"}:
+            return None
+        try:
+            days = int(float(token))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("天数必须是正整数") from exc
+        if days < 1 or days > 3650:
+            raise ValueError("天数必须在 1 到 3650 之间")
+        return days
+
+
+@dataclass
+class ExportPlan:
+    """Concrete files plus the effective window of one export request."""
+
+    spec: ExportSpec
+    entries: list[tuple[str, Path, Path]] = field(default_factory=list)
+    title: str = ""
+    aliases: tuple[str, ...] = ()
+    warnings: list[str] = field(default_factory=list)
+    since: float | None = None
+    until: float | None = None
+    slice_enabled: bool = True
+
+    @property
+    def window_filtered(self) -> bool:
+        return self.slice_enabled and (self.since is not None or self.until is not None)
+
+
 class CommandHandler:
     """Build status/search/export/send responses without blocking the event loop."""
 
@@ -90,16 +287,9 @@ class CommandHandler:
     #: Hard ceiling for a single WebUI read so a huge file cannot stall a request.
     MAX_SCAN_LINES = 200_000
     #: Severity ranking shared by LogVault and AstrBot level names.
-    LEVEL_ORDER = {
-        "TRACE": 5,
-        "DEBUG": 10,
-        "INFO": 20,
-        "SUCCESS": 25,
-        "WARN": 30,
-        "WARNING": 30,
-        "ERROR": 40,
-        "CRITICAL": 50,
-    }
+    LEVEL_ORDER = _LEVEL_ORDER
+    #: Suffixes of the bundles produced under data/exports.
+    EXPORT_SUFFIXES = _EXPORT_SUFFIXES
 
     def __init__(
         self,
@@ -110,6 +300,7 @@ class CommandHandler:
         host_log_dirs: Iterable[Path] | None = None,
         sensitive_filter=None,
         slice_by_record_time: bool = True,
+        mask_on_export: bool = True,
     ):
         self.data_dir = Path(data_dir).resolve()
         self.cleaner = cleaner
@@ -118,6 +309,7 @@ class CommandHandler:
         self.host_log_dirs = self._dedupe_dirs(host_log_dirs or [], include_missing=True)
         self.sensitive_filter = sensitive_filter
         self.slice_by_record_time = bool(slice_by_record_time)
+        self.mask_on_export = bool(mask_on_export)
 
     @staticmethod
     def _dedupe_dirs(
@@ -367,28 +559,44 @@ class CommandHandler:
             f"└─ 释放空间: {freed_mb} MB"
         )
 
-    async def handle_export(self, days: int | str | None = 7) -> str:
+    async def handle_export(
+        self, days: int | str | None = "", until: str = ""
+    ) -> str:
+        """Export recent logs, accepting a day count or a start date.
+
+        ``/log export 2`` keeps the historical meaning, while
+        ``/log export 2026-08-01 2026-08-20`` exports an explicit window and
+        ``/log export 0`` drops the limit entirely.
+        """
+
+        raw = str("" if days is None else days).strip()
+        payload: dict[str, object] = {"scope": "preset", "preset": "all"}
+        if _looks_like_date(raw):
+            payload["since"] = raw
+            payload["days"] = 0
+        else:
+            payload["days"] = raw
+        if str(until or "").strip():
+            payload["until"] = until
         try:
-            days = self._valid_days(days)
+            spec = ExportSpec.from_payload(payload, default_mask=self.mask_on_export)
         except ValueError as exc:
             return f"❌ {exc}"
-
-        export_dir = self.data_dir / "exports"
-        export_dir.mkdir(parents=True, exist_ok=True)
-        zip_path = export_dir / self._archive_name("logs_export")
-        entries = self._recent_entries(days)
-        if not entries:
-            return f"❌ 最近 {days} 天没有找到日志文件"
-        count = await asyncio.to_thread(
-            self._write_zip,
-            zip_path,
-            entries,
-            f"最近 {days} 天日志",
-            self._cutoff(days),
-            self.slice_by_record_time,
-        )
-        size_mb = round(zip_path.stat().st_size / 1024 / 1024, 2)
-        return f"📦 导出完成\n├─ 文件: {zip_path}\n├─ 包含: {count} 个日志文件\n└─ 大小: {size_mb} MB"
+        spec.prefix = "logs_export"
+        spec.title = self._export_window_title(spec)
+        try:
+            result = await asyncio.to_thread(self.build_export, spec)
+        except ValueError as exc:
+            return f"❌ {exc}"
+        size_mb = round(result["bytes"] / 1024 / 1024, 2)
+        lines = [
+            "📦 导出完成",
+            f"├─ 范围: {spec.title}",
+            f"├─ 文件: {result['path']}",
+            f"├─ 包含: {result['files']} 个日志文件",
+            f"└─ 大小: {size_mb} MB",
+        ]
+        return "\n".join(lines)
 
     def handle_help(self) -> str:
         return (
@@ -396,12 +604,14 @@ class CommandHandler:
             "├─ /log status              查看日志状态\n"
             "├─ /log search <词>         搜索日志关键词\n"
             "├─ /log clean               手动清理旧日志\n"
-            "├─ /log export [天]         导出最近N天日志（默认7天）\n"
+            "├─ /log export [天]         导出最近N天日志（默认7天，0=不限）\n"
+            "├─ /log export <起> [止]    按日期导出，如 2026-08-01 2026-08-20\n"
             "├─ /log send all [天]       发送最近N天的全部日志\n"
             "├─ /log send errors [天]    发送最近N天的错误日志\n"
             "├─ /log send plugin <名> [天] 发送指定插件最近N天日志\n"
             "├─ /logvault、/logplus ...  兼容别名\n"
-            "└─ /log help                显示此帮助"
+            "└─ /log help                显示此帮助\n"
+            "更细的范围、级别、关键词与格式请用面板的「导出」页签。"
         )
 
     async def handle_send(
@@ -475,6 +685,7 @@ class CommandHandler:
             label,
             self._cutoff(days),
             self.slice_by_record_time,
+            self.masker(self.mask_on_export),
         )
         size_mb = round(zip_path.stat().st_size / 1024 / 1024, 2)
         if target_lower == "all":
@@ -501,6 +712,17 @@ class CommandHandler:
     def _plugin_entries(
         self, keyword: str, days: int
     ) -> tuple[list[tuple[str, Path, Path]], str, str | None, set[str]]:
+        return self._plugin_entries_at(keyword, self._cutoff(days))
+
+    def _plugin_entries_at(
+        self, keyword: str, cutoff: float | None
+    ) -> tuple[list[tuple[str, Path, Path]], str, str | None, set[str]]:
+        """Resolve one plugin and its log files newer than *cutoff*.
+
+        A *cutoff* of None means "no time limit", which is what the WebUI
+        exporter uses when the user picks an unlimited window.
+        """
+
         needle = keyword.casefold()
         catalog = self._plugin_catalog()
         matches = [
@@ -521,12 +743,11 @@ class CommandHandler:
 
         matched = matches[0]
         plugin_name = matched.name
-        cutoff = self._cutoff(days)
         entries: list[tuple[str, Path, Path]] = []
         for label, root, plugin_dir in matched.log_dirs:
             for path in self._iter_files(root, plugin_dir):
                 try:
-                    if path.stat().st_mtime >= cutoff:
+                    if cutoff is None or path.stat().st_mtime >= cutoff:
                         entries.append((label, root, path))
                 except OSError:
                     continue
@@ -540,11 +761,17 @@ class CommandHandler:
     def _recent_shared_plugin_entries(
         self, days: int, aliases: set[str]
     ) -> list[tuple[str, Path, Path]]:
-        cutoff = self._cutoff(days)
+        return self._recent_shared_plugin_entries_at(self._cutoff(days))
+
+    def _recent_shared_plugin_entries_at(
+        self, cutoff: float | None
+    ) -> list[tuple[str, Path, Path]]:
+        """Shared logs (all.log and friends) newer than *cutoff*."""
+
         entries: list[tuple[str, Path, Path]] = []
         for label, root, path in self._shared_log_files():
             try:
-                if path.stat().st_mtime >= cutoff:
+                if cutoff is None or path.stat().st_mtime >= cutoff:
                     entries.append((label, root, path))
             except OSError:
                 continue
@@ -665,6 +892,7 @@ class CommandHandler:
         description: str,
         cutoff: float | None = None,
         slice_enabled: bool = True,
+        masker=None,
     ) -> int:
         """Archive log files, trimming records older than *cutoff*.
 
@@ -673,6 +901,10 @@ class CommandHandler:
         that spans the cutoff is rewritten with only the matching records.  A
         file without any parsable timestamp is kept in full so that unusual
         formats are never silently dropped.
+
+        When *masker* is given every member is decoded and rewritten, because
+        a byte-for-byte copy would otherwise leak the secrets that the
+        sensitive filter is supposed to hide.
         """
 
         count = 0
@@ -690,6 +922,7 @@ class CommandHandler:
             about.append(
                 "说明：跨越起点的日志文件已按记录时间裁剪；无法解析时间戳的文件保持完整。"
             )
+        about.append("敏感信息: 已脱敏" if masker is not None else "敏感信息: 未脱敏")
         try:
             with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
                 archive.writestr("ABOUT.txt", "\n".join(about) + "\n")
@@ -706,6 +939,17 @@ class CommandHandler:
                                 if not text.strip():
                                     seen.add(arcname)
                                     continue
+                        if masker is not None:
+                            if text is None:
+                                with cls._open_text(path) as stream:
+                                    text = stream.read()
+                            try:
+                                text = masker(text)
+                            except (AttributeError, TypeError, ValueError):
+                                pass
+                            if not text.strip():
+                                seen.add(arcname)
+                                continue
                         if text is None:
                             archive.write(path, arcname)
                         else:
@@ -763,6 +1007,529 @@ class CommandHandler:
         """Sliced members are stored as plain text, so drop the .gz suffix."""
 
         return arcname[:-3] if arcname.casefold().endswith(".gz") else arcname
+
+    # ------------------------------------------------------------------
+    # Export kernel
+    #
+    # Selecting files and rendering them are deliberately separate so the
+    # WebUI can pre-flight a request without writing anything, and so
+    # sensitive-value masking happens on exactly one code path.
+    # ------------------------------------------------------------------
+
+    def export_dir(self) -> Path:
+        directory = self.data_dir / "exports"
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory
+
+    def masker(self, enabled: bool = True):
+        """Return a callable that masks secrets, or None when disabled."""
+
+        if not enabled or not self.sensitive_filter:
+            return None
+        mask_text = getattr(self.sensitive_filter, "mask_text", None)
+        return mask_text if callable(mask_text) else None
+
+    def _export_window(self, spec: ExportSpec) -> tuple[float | None, float | None]:
+        """Resolve the effective (since, until) timestamps of *spec*."""
+
+        since = spec.since
+        if since is None and spec.days:
+            since = self._cutoff(spec.days)
+        return since, spec.until
+
+    def plan_for(self, spec: ExportSpec) -> ExportPlan:
+        """Turn *spec* into the concrete files it covers."""
+
+        since, until = self._export_window(spec)
+        plan = ExportPlan(
+            spec=spec,
+            since=since,
+            until=until,
+            slice_enabled=self.slice_by_record_time,
+        )
+        if spec.scope == "selection":
+            self._collect_selection(plan)
+        elif spec.scope == "category":
+            self._collect_category(plan)
+        elif spec.scope == "plugin":
+            self._collect_plugin(plan)
+        else:
+            self._collect_preset(plan)
+        if spec.title:
+            plan.title = spec.title
+        return plan
+
+    def _collect_selection(self, plan: ExportPlan) -> None:
+        if not plan.spec.ids:
+            raise ValueError("请先选择要导出的日志文件")
+        seen: set[str] = set()
+        for file_id in plan.spec.ids:
+            resolved = self.resolve_file(file_id)
+            if resolved is None:
+                plan.warnings.append(f"已跳过无效或越界的文件标识: {file_id}")
+                continue
+            label, root, path = resolved
+            key = os.path.normcase(str(path))
+            if key in seen:
+                continue
+            seen.add(key)
+            plan.entries.append((label, root, path))
+        plan.title = f"所选 {len(plan.entries)} 个日志文件"
+
+    def _collect_category(self, plan: ExportPlan) -> None:
+        wanted = plan.spec.category or self.ALL_CATEGORY
+        wanted_source = plan.spec.source or None
+        display = ""
+        for label, root in self._browse_sources():
+            if wanted_source and label != wanted_source:
+                continue
+            for path in self._iter_files(root):
+                key, name, _kind = self._categorize(root, path)
+                if wanted != self.ALL_CATEGORY and key != wanted:
+                    continue
+                display = display or name
+                plan.entries.append((label, root, path))
+        self._apply_mtime_prefilter(plan)
+        if wanted == self.ALL_CATEGORY:
+            plan.title = "全部分类" if not wanted_source else f"来源 {wanted_source} 的全部日志"
+        else:
+            plan.title = f"分类 {display or wanted}"
+
+    def _collect_preset(self, plan: ExportPlan) -> None:
+        subdir, name = _EXPORT_PRESETS[plan.spec.preset]
+        for label, root in self._sources():
+            base = root / subdir if subdir else root
+            for path in self._iter_files(root, base):
+                plan.entries.append((label, root, path))
+        self._apply_mtime_prefilter(plan)
+        plan.title = name
+
+    def _collect_plugin(self, plan: ExportPlan) -> None:
+        keyword = plan.spec.plugin.strip()
+        if not keyword:
+            raise ValueError("请提供插件名")
+        entries, name, error, aliases = self._plugin_entries_at(keyword, plan.since)
+        if error:
+            raise ValueError(error.lstrip("❌ "))
+        plan.title = f"插件 {name} 日志"
+        if entries:
+            plan.entries.extend(entries)
+            return
+        # No dedicated directory yet: fall back to filtering the shared
+        # logs by the plugin identifier, exactly like /log send does.
+        shared = self._recent_shared_plugin_entries_at(plan.since)
+        if not shared:
+            raise ValueError(f"插件 {name} 在所选时间范围内没有日志")
+        plan.entries.extend(shared)
+        plan.aliases = tuple(sorted(aliases))
+        plan.title = f"插件 {name} 日志（自共享日志筛选）"
+
+    def _apply_mtime_prefilter(self, plan: ExportPlan) -> None:
+        """Drop files that cannot contain a record inside the window.
+
+        Only a cheap stat() is used here; the exact trimming happens while
+        the member is rendered.
+        """
+
+        if plan.since is None:
+            return
+        kept: list[tuple[str, Path, Path]] = []
+        for label, root, path in plan.entries:
+            try:
+                if path.stat().st_mtime >= plan.since:
+                    kept.append((label, root, path))
+            except OSError:
+                continue
+        plan.entries = kept
+
+    # -- rendering ------------------------------------------------------
+
+    @classmethod
+    def _record_blocks(cls, path: Path) -> Iterator[tuple[float | None, str]]:
+        """Yield (timestamp, text) per log record, continuations included.
+
+        AstrBot may spread one record over several lines (tracebacks, or its
+        three-line backend format); a new bracketed timestamp starts the next
+        record.  Blocks without a parsable timestamp yield None so callers can
+        decide to keep them instead of silently dropping unknown formats.
+        """
+
+        current: list[str] = []
+        stamp: float | None = None
+        with cls._open_text(path) as stream:
+            for line in stream:
+                if current and _LOG_RECORD_START_RE.match(line):
+                    yield stamp, "".join(current)
+                    current = []
+                    stamp = None
+                if not current:
+                    stamp = _parse_record_time(line)
+                current.append(line)
+        if current:
+            yield stamp, "".join(current)
+
+    def _will_trim(self, plan: ExportPlan, path: Path) -> bool:
+        """Whether the active filters will actually drop records from *path*."""
+
+        if plan.aliases or plan.spec.content_filtered:
+            return True
+        if not plan.window_filtered:
+            return False
+        if plan.until is not None:
+            # The newest record is unknown without reading the file.
+            return True
+        oldest = self._oldest_record_time(path)
+        return oldest is not None and plan.since is not None and oldest < plan.since
+
+    def _needs_rewrite(self, plan: ExportPlan, path: Path, masker) -> bool:
+        """Whether a member has to be re-rendered instead of copied."""
+
+        return masker is not None or self._will_trim(plan, path)
+
+    def _render_member(self, plan: ExportPlan, path: Path, masker) -> tuple[str, int]:
+        """Return the filtered text of one member plus its kept record count."""
+
+        allowed = {
+            _LEVEL_ORDER[name] for name in plan.spec.levels if name in _LEVEL_ORDER
+        }
+        needle = plan.spec.keyword.casefold() or None
+        aliases = set(plan.aliases)
+        window = plan.window_filtered
+        kept: list[str] = []
+        for stamp, block in self._record_blocks(path):
+            if window and stamp is not None:
+                if plan.since is not None and stamp < plan.since:
+                    continue
+                if plan.until is not None and stamp > plan.until:
+                    continue
+            if allowed:
+                level = self._line_level(block)
+                if level is not None and _LEVEL_ORDER.get(level, 0) not in allowed:
+                    continue
+            if aliases and not self._line_matches_plugin(block, aliases):
+                continue
+            if needle and needle not in block.casefold():
+                continue
+            kept.append(block)
+        text = "".join(kept)
+        if masker is not None and text:
+            try:
+                text = masker(text)
+            except (AttributeError, TypeError, ValueError):
+                pass
+        return text, len(kept)
+
+    # -- writing --------------------------------------------------------
+
+    @staticmethod
+    def _export_stamp() -> str:
+        return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    def _export_slug(self, plan: ExportPlan) -> str:
+        """Build a safe, collision free file name for the bundle."""
+
+        prefix = re.sub(r"[^0-9A-Za-z_\-]+", "_", plan.spec.prefix or "")
+        prefix = prefix.strip("_")[:60] or "logvault_export"
+        suffix = ".txt" if plan.spec.fmt == "merged" else ".zip"
+        return f"{prefix}_{self._export_stamp()}{suffix}"
+
+    @staticmethod
+    def _export_window_title(spec: ExportSpec) -> str:
+        """Describe the time window of *spec* for humans."""
+
+        if spec.since is not None or spec.until is not None:
+            start = (
+                datetime.fromtimestamp(spec.since).strftime("%Y-%m-%d")
+                if spec.since is not None
+                else "最早"
+            )
+            end = (
+                datetime.fromtimestamp(spec.until).strftime("%Y-%m-%d")
+                if spec.until is not None
+                else "至今"
+            )
+            return f"{start} ~ {end} 日志"
+        if spec.days:
+            return f"最近 {spec.days} 天日志"
+        return "全部日志"
+
+    def _export_about(
+        self, plan: ExportPlan, members: int, rewritten: int, masker
+    ) -> list[str]:
+        """Describe what a bundle holds and how it was filtered."""
+
+        spec = plan.spec
+        lines = [
+            "LogVault 日志导出",
+            plan.title or "日志导出",
+            f"生成时间: {datetime.now().isoformat(timespec='seconds')}",
+            f"文件数: {members}",
+        ]
+        if plan.since is not None or plan.until is not None:
+            start = (
+                datetime.fromtimestamp(plan.since).strftime("%Y-%m-%d %H:%M:%S")
+                if plan.since is not None
+                else "最早"
+            )
+            end = (
+                datetime.fromtimestamp(plan.until).strftime("%Y-%m-%d %H:%M:%S")
+                if plan.until is not None
+                else "至今"
+            )
+            lines.append(f"时间范围: {start} ~ {end}")
+        else:
+            lines.append("时间范围: 不限")
+        if spec.levels:
+            lines.append(f"级别过滤: {', '.join(spec.levels)}")
+        if spec.keyword:
+            lines.append(f"关键词过滤: {spec.keyword}")
+        if plan.aliases:
+            lines.append(f"插件标识过滤: {', '.join(plan.aliases)}")
+        lines.append("敏感信息: 已脱敏" if masker is not None else "敏感信息: 未脱敏")
+        if rewritten:
+            lines.append(f"按条件重写: {rewritten} 个文件（其余按原样保留）")
+        lines.extend(f"提示: {warning}" for warning in plan.warnings)
+        return lines
+
+    def _export_members(self, plan: ExportPlan) -> Iterator[tuple[str, Path]]:
+        """Yield (arcname, path) pairs of *plan*, duplicates removed."""
+
+        seen: set[str] = set()
+        for label, root, path in plan.entries:
+            try:
+                arcname = self._relative_arcname(label, root, path)
+            except ValueError:
+                continue
+            if arcname in seen:
+                continue
+            seen.add(arcname)
+            yield arcname, path
+
+    def _write_export_zip(self, path: Path, plan: ExportPlan, masker) -> dict:
+        """Write a ZIP bundle, rewriting only the members that need it."""
+
+        count = 0
+        rewritten = 0
+        records = 0
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+            for arcname, source in self._export_members(plan):
+                try:
+                    if self._needs_rewrite(plan, source, masker):
+                        text, kept = self._render_member(plan, source, masker)
+                        if not text.strip():
+                            continue
+                        archive.writestr(self._sliced_arcname(arcname), text)
+                        rewritten += 1
+                        records += kept
+                    else:
+                        archive.write(source, arcname)
+                except (OSError, EOFError, UnicodeError, ValueError):
+                    plan.warnings.append(f"读取失败已跳过: {arcname}")
+                    continue
+                count += 1
+            archive.writestr(
+                "ABOUT.txt",
+                "\n".join(self._export_about(plan, count, rewritten, masker)) + "\n",
+            )
+        return {"files": count, "rewritten": rewritten, "records": records}
+
+    def _write_merged(self, path: Path, plan: ExportPlan, masker) -> dict:
+        """Write one flat text file: header first, body streamed from a temp.
+
+        The body is buffered on disk rather than in memory because a
+        merged export of an unlimited window can be hundreds of MB.
+        """
+
+        count = 0
+        records = 0
+        body = path.with_name(path.name + ".part")
+        try:
+            with body.open("w", encoding="utf-8", newline="\n") as stream:
+                for arcname, source in self._export_members(plan):
+                    try:
+                        text, kept = self._render_member(plan, source, masker)
+                    except (OSError, EOFError, UnicodeError, ValueError):
+                        plan.warnings.append(f"读取失败已跳过: {arcname}")
+                        continue
+                    if not text.strip():
+                        continue
+                    stream.write(f"\n===== {arcname} =====\n")
+                    stream.write(text if text.endswith("\n") else text + "\n")
+                    count += 1
+                    records += kept
+            header = "\n".join(self._export_about(plan, count, 0, masker))
+            with path.open("w", encoding="utf-8", newline="\n") as target:
+                target.write(header + "\n")
+                with body.open("r", encoding="utf-8") as buffered:
+                    shutil.copyfileobj(buffered, target)
+        finally:
+            try:
+                body.unlink(missing_ok=True)
+            except OSError:
+                pass
+        return {"files": count, "rewritten": count, "records": records}
+
+    def build_export(self, spec: ExportSpec) -> dict:
+        """Write one bundle under data/exports and describe the result."""
+
+        plan = self.plan_for(spec)
+        if not plan.entries:
+            raise ValueError("所选范围内没有可导出的日志文件")
+        masker = self.masker(spec.mask)
+        path = self.export_dir() / self._export_slug(plan)
+        if path.exists():
+            # Two exports inside the same second must not clobber each other.
+            stem, suffix = path.stem, path.suffix
+            for index in range(2, 100):
+                candidate = path.with_name(f"{stem}_{index}{suffix}")
+                if not candidate.exists():
+                    path = candidate
+                    break
+        try:
+            if spec.fmt == "merged":
+                result = self._write_merged(path, plan, masker)
+            else:
+                result = self._write_export_zip(path, plan, masker)
+        except Exception:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+        if not result["files"]:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise ValueError("过滤条件过严，没有任何日志记录符合条件")
+        result.update(
+            name=path.name,
+            path=path,
+            bytes=path.stat().st_size,
+            title=plan.title,
+            format=spec.fmt,
+            mask=masker is not None,
+            warnings=list(plan.warnings),
+            since=plan.since,
+            until=plan.until,
+        )
+        return result
+
+    def plan_export(self, spec: ExportSpec) -> dict:
+        """Pre-flight an export request without writing anything."""
+
+        plan = self.plan_for(spec)
+        masker = self.masker(spec.mask)
+        files = 0
+        total = 0
+        trimmed = 0
+        for _arcname, source in self._export_members(plan):
+            try:
+                total += source.stat().st_size
+            except OSError:
+                continue
+            files += 1
+            if self._will_trim(plan, source):
+                trimmed += 1
+        return {
+            "files": files,
+            "bytes": total,
+            "trimmed": trimmed,
+            "title": plan.title,
+            "format": spec.fmt,
+            "mask": masker is not None,
+            "masking_available": self.masker(True) is not None,
+            "levels": list(spec.levels),
+            "keyword": spec.keyword,
+            "since": plan.since,
+            "until": plan.until,
+            "warnings": list(plan.warnings),
+        }
+
+    # -- history --------------------------------------------------------
+
+    def list_exports(self) -> list[dict]:
+        """List the bundles kept under data/exports, newest first."""
+
+        items: list[dict] = []
+        directory = self.export_dir()
+        try:
+            candidates = list(directory.iterdir())
+        except OSError:
+            return items
+        for path in candidates:
+            if not path.is_file():
+                continue
+            suffix = path.suffix.casefold()
+            if suffix not in self.EXPORT_SUFFIXES:
+                continue
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            items.append(
+                {
+                    "name": path.name,
+                    "size": stat.st_size,
+                    "mtime": stat.st_mtime,
+                    "format": "merged" if suffix == ".txt" else "zip",
+                }
+            )
+        items.sort(key=lambda item: item["mtime"], reverse=True)
+        return items
+
+    def resolve_export(self, name: str) -> Path | None:
+        """Resolve a bundle name, refusing anything outside data/exports."""
+
+        token = str(name or "").strip()
+        if not token or token in {".", ".."}:
+            return None
+        if "/" in token or "\\" in token or Path(token).name != token:
+            return None
+        directory = self.export_dir().resolve()
+        try:
+            resolved = (directory / token).resolve()
+        except OSError:
+            return None
+        if resolved.parent != directory:
+            return None
+        if resolved.suffix.casefold() not in self.EXPORT_SUFFIXES:
+            return None
+        return resolved if resolved.is_file() else None
+
+    def delete_exports(self, names: Iterable[str] = (), purge_all: bool = False) -> dict:
+        """Delete named bundles, or every bundle when *purge_all* is set."""
+
+        targets: list[Path] = []
+        skipped = 0
+        if purge_all:
+            directory = self.export_dir()
+            targets = [directory / item["name"] for item in self.list_exports()]
+        else:
+            for name in names or ():
+                resolved = self.resolve_export(name)
+                if resolved is None:
+                    skipped += 1
+                    continue
+                targets.append(resolved)
+        deleted = 0
+        freed = 0
+        failed = 0
+        for path in targets:
+            try:
+                size = path.stat().st_size
+                path.unlink()
+            except OSError:
+                failed += 1
+                continue
+            deleted += 1
+            freed += size
+        return {
+            "deleted": deleted,
+            "freed_bytes": freed,
+            "skipped": skipped,
+            "failed": failed,
+        }
 
     # ------------------------------------------------------------------
     # WebUI support

@@ -147,5 +147,29 @@
     "hint": "开启后 send/export 的天数按每行日志自己的时间戳裁剪，跨天的 all.log 只会导出指定天数内的行；关闭则退回按文件修改时间整份打包。",
     "type": "bool",
     "default": true
+  },
+  "mask_on_export": {
+    "description": "导出与发送时脱敏敏感信息",
+    "hint": "默认开启：打包出去的日志会先经过敏感信息过滤。关闭后导出的是原始日志，请只在本机排障时使用。需要同时启用 enable_sensitive_filter。",
+    "type": "bool",
+    "default": true
+  },
+  "export_retention_days": {
+    "description": "导出包保留天数",
+    "hint": "data/exports 下的导出包超过该天数后自动删除；0=不按时间清理。最新的一个导出包永远保留。",
+    "type": "int",
+    "default": 7
+  },
+  "export_max_total_mb": {
+    "description": "导出包总大小上限(MB)",
+    "hint": "超出后从最旧的导出包开始删除；0=不限制。",
+    "type": "int",
+    "default": 512
+  },
+  "export_max_files": {
+    "description": "导出包最大数量",
+    "hint": "只保留最近 N 个导出包；0=不限制。",
+    "type": "int",
+    "default": 20
   }
 }

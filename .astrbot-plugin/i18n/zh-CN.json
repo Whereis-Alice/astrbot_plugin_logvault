@@ -6,32 +6,28 @@
   "pages": {
     "logs": {
       "action": {
-        "bundle": "下载 ZIP",
         "clean": "立即清理",
         "clearView": "清屏",
+        "clearWindow": "清除时间",
         "close": "关闭",
         "collapse": "收起",
         "copy": "复制",
         "delete": "删除所选",
+        "delete2": "删除",
         "download": "下载",
         "expand": "展开",
+        "exportCategory": "导出此分类",
+        "exportHits": "导出结果",
+        "exportPlan": "预检",
+        "exportRun": "开始导出",
+        "exportSelected": "导出所选",
+        "exportView": "导出视图",
+        "purgeAll": "清空",
         "recheck": "重新检测",
         "refresh": "刷新",
         "reload": "重载",
         "search": "搜索",
         "view": "查看"
-      },
-      "bundle": {
-        "all": "全部日志",
-        "days": "最近天数",
-        "done": "打包完成",
-        "errors": "仅错误日志",
-        "plugin": "指定插件",
-        "pluginName": "插件",
-        "scope": "范围",
-        "sliceOff": "按记录时间切片已关闭：只按文件修改时间筛选，命中的文件会整体打包。",
-        "sliceOn": "按记录时间切片已开启：打包时会逐行截取指定天数内的记录，跨天的汇总日志也能精确裁剪。",
-        "working": "正在打包，请稍候..."
       },
       "capture": {
         "attached": "已挂载 logger",
@@ -46,7 +42,6 @@
         "version": "插件版本"
       },
       "card": {
-        "bundle": "打包导出",
         "capture": "采集通路",
         "dist": "分类占用",
         "sources": "日志来源"
@@ -57,7 +52,9 @@
       },
       "confirm": {
         "clean": "立即执行压缩与清理？超期日志会被删除。",
-        "delete": "确认删除选中的日志文件？该操作不可恢复。"
+        "delete": "确认删除选中的日志文件？该操作不可恢复。",
+        "purge": "删除该导出包？",
+        "purgeAll": "清空全部导出包？该操作不可恢复。"
       },
       "density": {
         "compact": "紧凑",
@@ -81,6 +78,53 @@
       },
       "error": {
         "request": "请求失败"
+      },
+      "export": {
+        "builder": "导出构建器",
+        "days": "最近天数",
+        "done": "导出完成",
+        "emptyPlan": "当前条件没有命中任何文件，请放宽时间窗或过滤条件。",
+        "format": "格式",
+        "formatMerged": "合并 TXT",
+        "formatZip": "ZIP 压缩包",
+        "history": "导出历史",
+        "historyEmpty": "还没有生成过导出包",
+        "keyword": "关键词",
+        "levels": "级别过滤",
+        "mask": "导出前脱敏",
+        "maskOff": "已关闭",
+        "maskOn": "已开启",
+        "maskUnavailable": "脱敏组件未启用",
+        "none": "无",
+        "noteCategory": "将导出当前分类",
+        "noteCategoryEmpty": "请先在日志文件页选择一个分类",
+        "notePlugin": "按插件名匹配其专属目录，并从共享日志中挑出相关记录",
+        "notePreset": "预设范围覆盖全部已登记的日志来源",
+        "noteSelection": "将导出日志文件页勾选的文件",
+        "noteSelectionEmpty": "日志文件页还没有勾选任何文件",
+        "planning": "正在预检...",
+        "plugin": "插件",
+        "preset": "预设",
+        "presetAll": "全部日志",
+        "presetCore": "核心日志",
+        "presetErrors": "仅错误日志",
+        "previewHint": "点击预检，先看看会导出什么",
+        "rowFiles": "文件",
+        "rowFilter": "内容过滤",
+        "rowFormat": "格式",
+        "rowMask": "脱敏",
+        "rowRange": "范围",
+        "rowTrimmed": "逐行裁剪",
+        "scope": "范围",
+        "scopeCategory": "当前分类",
+        "scopePlugin": "指定插件",
+        "scopePreset": "预设范围",
+        "scopeSelection": "已勾选文件",
+        "since": "起始日期",
+        "sliceOff": "按记录时间切片已关闭：只按文件修改时间筛选，命中的文件会整体导出。",
+        "sliceOn": "按记录时间切片已开启：导出时会逐行截取时间窗内的记录，跨天的汇总日志也能精确裁剪。",
+        "until": "结束日期",
+        "working": "正在生成导出包..."
       },
       "files": {
         "categories": "分类",
@@ -128,6 +172,7 @@
       },
       "placeholder": {
         "category": "过滤分类",
+        "exportKeyword": "只保留包含该关键词的行",
         "file": "过滤文件名",
         "liveFile": "搜索或选择日志文件",
         "liveKeyword": "搜索日志内容",
@@ -178,6 +223,7 @@
       },
       "tab": {
         "diag": "采集诊断",
+        "export": "导出中心",
         "files": "日志文件",
         "live": "实时日志",
         "overview": "运行总览",
@@ -194,17 +240,21 @@
       },
       "title": "LogVault 控制台",
       "toast": {
-        "bundled": "已开始下载压缩包",
         "compressed": "压缩",
         "copied": "已复制到剪贴板",
         "copyFailed": "复制失败，请手动选择文本",
         "deleted": "已删除",
+        "exported": "已开始下载导出包",
         "followUnsupported": "该文件不支持实时跟随",
         "freed": "释放",
         "liveLoaded": "已载入日志尾部",
+        "needCategory": "请先在日志文件页选择分类",
         "needKeyword": "请输入搜索关键词",
         "needPlugin": "请填写插件名",
+        "needSelection": "请先在日志文件页勾选文件",
         "nothingToCopy": "没有可复制的内容",
+        "nothingToExport": "没有可导出的内容",
+        "planned": "预检完成",
         "refreshed": "已刷新",
         "rotated": "日志已轮换，视图已重置",
         "skipped": "跳过"

@@ -13,8 +13,12 @@ console.
 from __future__ import annotations
 
 import asyncio
+import secrets
+import time
 from pathlib import Path
 from typing import Any
+
+from .command_handler import ExportSpec
 
 try:  # AstrBot 4.27+ ships a framework-neutral helper module.
     from astrbot.api.web import (  # type: ignore[attr-defined]
@@ -110,6 +114,18 @@ def _query_int(name: str, default: int) -> int:
         return default
 
 
+def _export_mime(fmt: str) -> str:
+    return "text/plain; charset=utf-8" if fmt == "merged" else "application/zip"
+
+
+def _truthy(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value or "").strip().casefold() in {"1", "true", "yes", "on"}
+
+
 async def _json_body() -> dict:
     try:
         if _NATIVE_WEB_API:
@@ -124,8 +140,17 @@ async def _json_body() -> dict:
 class LogVaultWebApi:
     """Register and serve the dashboard endpoints of the logs page."""
 
+    #: How long a pre-flighted export stays downloadable.
+    EXPORT_TOKEN_TTL = 600.0
+    #: Pre-flight results kept at once; oldest ones are dropped first.
+    EXPORT_TOKEN_MAX = 8
+
     def __init__(self, plugin):
         self.plugin = plugin
+        # The bridge can only download over GET with a query string, so an
+        # export request is pre-flighted over POST and handed a short lived
+        # token instead of squeezing file ids into the URL.
+        self._export_tokens: dict[str, tuple[float, ExportSpec]] = {}
 
     # -- registration ---------------------------------------------------
 
@@ -146,6 +171,11 @@ class LogVaultWebApi:
             ("delete", self.delete, ["POST"], "LogVault 删除轮换日志"),
             ("clean", self.clean, ["POST"], "LogVault 手动清理"),
             ("capture", self.capture, ["GET"], "LogVault 捕获状态诊断"),
+            ("export_plan", self.export_plan, ["POST"], "LogVault 导出预检"),
+            ("export_file", self.export_file, ["GET"], "LogVault 导出下载"),
+            ("export_history", self.export_history, ["GET"], "LogVault 导出历史"),
+            ("export_download", self.export_download, ["GET"], "LogVault 历史包下载"),
+            ("export_purge", self.export_purge, ["POST"], "LogVault 清理导出包"),
         )
         routes: list[str] = []
         for name, handler, methods, description in endpoints:
@@ -294,3 +324,111 @@ class LogVaultWebApi:
         return json_response(
             {"status": "ok", "data": self.plugin.capture_diagnostics()}
         )
+
+    # -- export ---------------------------------------------------------
+
+    def _remember_export(self, spec: ExportSpec) -> str:
+        """Store a pre-flighted spec and return its one-shot token."""
+
+        now = time.monotonic()
+        self._export_tokens = {
+            key: value
+            for key, value in self._export_tokens.items()
+            if now - value[0] <= self.EXPORT_TOKEN_TTL
+        }
+        while len(self._export_tokens) >= self.EXPORT_TOKEN_MAX:
+            oldest = min(
+                self._export_tokens, key=lambda key: self._export_tokens[key][0]
+            )
+            self._export_tokens.pop(oldest, None)
+        token = secrets.token_urlsafe(18)
+        self._export_tokens[token] = (now, spec)
+        return token
+
+    def _take_export(self, token: str) -> ExportSpec | None:
+        """Consume a token; it is never valid twice."""
+
+        entry = self._export_tokens.pop(str(token or "").strip(), None)
+        if entry is None:
+            return None
+        created, spec = entry
+        if time.monotonic() - created > self.EXPORT_TOKEN_TTL:
+            return None
+        return spec
+
+    async def export_plan(self):
+        """Count what an export would contain, without writing anything."""
+
+        commands = self.commands
+        if commands is None:
+            return self._not_ready()
+        payload = await _json_body()
+        default_mask = bool(getattr(commands, "mask_on_export", True))
+        try:
+            spec = ExportSpec.from_payload(payload, default_mask=default_mask)
+            preview = await asyncio.to_thread(commands.plan_export, spec)
+        except ValueError as exc:
+            return error_response(str(exc))
+        preview["token"] = self._remember_export(spec) if preview["files"] else ""
+        return json_response({"status": "ok", "data": preview})
+
+    async def export_file(self):
+        """Build the bundle behind a pre-flight token and stream it back."""
+
+        commands = self.commands
+        if commands is None:
+            return self._not_ready()
+        spec = self._take_export(_query("token"))
+        if spec is None:
+            return error_response("导出令牌已失效，请重新预检", status_code=410)
+        try:
+            result = await asyncio.to_thread(commands.build_export, spec)
+        except ValueError as exc:
+            return error_response(str(exc))
+        path = Path(result["path"])
+        if not path.exists():
+            return error_response("导出文件生成失败", status_code=500)
+        return file_response(
+            path, filename=path.name, content_type=_export_mime(result["format"])
+        )
+
+    async def export_history(self):
+        commands = self.commands
+        if commands is None:
+            return self._not_ready()
+        items = await asyncio.to_thread(commands.list_exports)
+        return json_response({"status": "ok", "data": {"exports": items}})
+
+    async def export_download(self):
+        """Re-download a bundle that is still kept under data/exports."""
+
+        commands = self.commands
+        if commands is None:
+            return self._not_ready()
+        resolved = await asyncio.to_thread(commands.resolve_export, _query("name"))
+        if resolved is None:
+            return error_response("导出包不存在或已被清理", status_code=404)
+        fmt = "merged" if resolved.suffix.casefold() == ".txt" else "zip"
+        return file_response(
+            resolved, filename=resolved.name, content_type=_export_mime(fmt)
+        )
+
+    async def export_purge(self):
+        commands = self.commands
+        if commands is None:
+            return self._not_ready()
+        payload = await _json_body()
+        purge_all = _truthy(payload.get("all"))
+        raw_names = payload.get("names") or payload.get("name") or []
+        if isinstance(raw_names, str):
+            raw_names = [raw_names]
+        if not isinstance(raw_names, list):
+            return error_response("names 必须是数组")
+        if not purge_all and not raw_names:
+            return error_response("请提供要删除的导出包名称")
+        if len(raw_names) > 200:
+            return error_response("一次最多删除 200 个导出包")
+        result = await asyncio.to_thread(
+            commands.delete_exports, [str(item) for item in raw_names], purge_all
+        )
+        return json_response({"status": "ok", "data": result})

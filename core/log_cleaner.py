@@ -31,6 +31,9 @@ def _is_log_file(path: Path) -> bool:
 class LogCleaner:
     """Compress and remove *closed* logs without touching active streams."""
 
+    #: Suffixes written by the exporter; nothing else under exports is removed.
+    EXPORT_SUFFIXES = (".zip", ".txt")
+
     def __init__(self, data_dir: Path, config: dict):
         self.data_dir = Path(data_dir)
         self.config = config
@@ -93,7 +96,80 @@ class LogCleaner:
             result["deleted"] = deleted
             result["freed_bytes"] = freed
 
+        # Export bundles live outside the log retention scan on purpose, so
+        # without this pass data/exports grew until the disk filled up.
+        purged, purged_bytes = await asyncio.to_thread(self._clean_exports)
+        result["exports_deleted"] = purged
+        result["deleted"] += purged
+        result["freed_bytes"] += purged_bytes
+
         return result
+
+    def _clean_exports(self) -> tuple[int, int]:
+        """Enforce age, count and size limits on data/exports.
+
+        Only generated bundles are considered, and the newest bundle is
+        always kept so that a just finished export cannot vanish mid
+        download.
+        """
+
+        directory = self.data_dir / "exports"
+        if not directory.is_dir():
+            return 0, 0
+        retention_days = self._positive_int(
+            self.config.get("export_retention_days", 7), 7
+        )
+        max_files = self._positive_int(self.config.get("export_max_files", 20), 20)
+        max_bytes = (
+            self._positive_int(self.config.get("export_max_total_mb", 512), 512)
+            * 1024
+            * 1024
+        )
+        bundles: list[tuple[float, int, Path]] = []
+        try:
+            candidates = list(directory.iterdir())
+        except OSError:
+            return 0, 0
+        for path in candidates:
+            if not path.is_file():
+                continue
+            if path.suffix.casefold() not in self.EXPORT_SUFFIXES:
+                continue
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            bundles.append((stat.st_mtime, stat.st_size, path))
+        if not bundles:
+            return 0, 0
+        bundles.sort(key=lambda item: item[0], reverse=True)
+        cutoff = (datetime.now() - timedelta(days=retention_days)).timestamp()
+        doomed: list[tuple[float, int, Path]] = []
+        kept: list[tuple[float, int, Path]] = []
+        for index, bundle in enumerate(bundles):
+            too_old = retention_days > 0 and bundle[0] < cutoff
+            too_many = max_files > 0 and index >= max_files
+            # index 0 is the newest bundle and is always preserved.
+            if index and (too_old or too_many):
+                doomed.append(bundle)
+            else:
+                kept.append(bundle)
+        if max_bytes > 0:
+            total = sum(item[1] for item in kept)
+            while len(kept) > 1 and total > max_bytes:
+                victim = kept.pop()
+                total -= victim[1]
+                doomed.append(victim)
+        deleted = 0
+        freed = 0
+        for _mtime, size, path in doomed:
+            try:
+                path.unlink()
+            except OSError:
+                continue
+            deleted += 1
+            freed += size
+        return deleted, freed
 
     async def _compress_old_logs(self, days: int) -> int:
         threshold = datetime.now() - timedelta(days=days)
