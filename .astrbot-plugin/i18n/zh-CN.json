@@ -1,7 +1,7 @@
 {
   "metadata": {
-    "display_name": "LogVault 日志中心",
-    "description": "分插件归档 AstrBot 日志，并在 Dashboard 控制台中分类查看、实时跟随、搜索与清理。"
+    "description": "分插件归档 AstrBot 日志，并在 Dashboard 控制台中分类查看、实时跟随、搜索与清理。",
+    "display_name": "LogVault 日志中心"
   },
   "pages": {
     "logs": {
@@ -111,6 +111,7 @@
         "keyword": "关键词",
         "level": "级别",
         "noFile": "暂无可跟随文件",
+        "noMatch": "没有匹配的文件",
         "paused": "已暂停",
         "polling": "每 2 秒增量拉取",
         "shown": "当前展示",
@@ -128,6 +129,7 @@
       "placeholder": {
         "category": "过滤分类",
         "file": "过滤文件名",
+        "liveFile": "搜索或选择日志文件",
         "liveKeyword": "搜索日志内容",
         "plugin": "插件名",
         "search": "跨来源搜索全部日志",

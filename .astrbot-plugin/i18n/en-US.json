@@ -1,7 +1,7 @@
 {
   "metadata": {
-    "display_name": "LogVault",
-    "description": "Archives AstrBot logs per plugin and offers a dashboard console to browse, follow, search and clean them."
+    "description": "Archives AstrBot logs per plugin and offers a dashboard console to browse, follow, search and clean them.",
+    "display_name": "LogVault"
   },
   "pages": {
     "logs": {
@@ -111,6 +111,7 @@
         "keyword": "Keyword",
         "level": "Level",
         "noFile": "No followable file",
+        "noMatch": "No matching file",
         "paused": "Paused",
         "polling": "Polling every 2s",
         "shown": "Showing",
@@ -128,6 +129,7 @@
       "placeholder": {
         "category": "Filter categories",
         "file": "Filter file names",
+        "liveFile": "Search or pick a log file",
         "liveKeyword": "Search log content",
         "plugin": "Plugin name",
         "search": "Search every source",

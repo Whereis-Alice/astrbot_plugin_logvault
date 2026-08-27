@@ -12,7 +12,13 @@
 
       <header class="lv-top">
         <div class="lv-brand">
-          <span class="lv-mark" aria-hidden="true">LV</span>
+          <span class="lv-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+              <path d="M13.4 3H7.2A2.2 2.2 0 0 0 5 5.2v13.6A2.2 2.2 0 0 0 7.2 21h9.6a2.2 2.2 0 0 0 2.2-2.2V8.6z" />
+              <path d="M13.4 3v5.6H19" />
+              <path d="M8.6 12.4h6.8M8.6 15.6h4.6" />
+            </svg>
+          </span>
           <div class="lv-brand-text">
             <h1 id="page-title">LogVault 控制台</h1>
             <p id="page-desc">采集诊断、实时日志流、分类归档与安全导出</p>
@@ -107,9 +113,16 @@
 
         <section class="lv-panel" id="panel-live" role="tabpanel" hidden>
           <div class="lv-toolbar lv-toolbar-sticky">
-            <div class="lv-field lv-field-grow">
-              <label for="live-file" data-i18n="live.file">跟随文件</label>
-              <select id="live-file" class="lv-input"></select>
+            <div class="lv-field lv-field-grow lv-field-combo">
+              <label for="live-file-input" data-i18n="live.file">跟随文件</label>
+              <div class="lv-combo" id="live-file-combo">
+                <input id="live-file-input" class="lv-input lv-combo-input" type="text" role="combobox"
+                  aria-expanded="false" aria-controls="live-file-list" aria-autocomplete="list"
+                  autocomplete="off" spellcheck="false" placeholder="搜索或选择日志文件" />
+                <button id="live-file-toggle" class="lv-combo-caret" type="button" tabindex="-1" aria-hidden="true">▾</button>
+                <div id="live-file-list" class="lv-combo-list" role="listbox" hidden></div>
+              </div>
+              <select id="live-file" class="lv-combo-native" tabindex="-1" aria-hidden="true"></select>
             </div>
             <div class="lv-field">
               <label for="live-level" data-i18n="live.level">级别</label>

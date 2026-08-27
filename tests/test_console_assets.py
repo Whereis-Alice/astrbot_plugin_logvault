@@ -91,6 +91,38 @@ class ConsoleAssetTests(unittest.TestCase):
         panels = set(re.findall(r'id="panel-([a-z]+)"', self.html))
         self.assertEqual(tabs, panels)
 
+    def test_brand_mark_is_a_theme_neutral_icon(self):
+        start = self.html.index('<span class="lv-mark"')
+        end = self.html.index("</span>", start)
+        mark = self.html[start:end]
+        # An inline stroke icon inherits the accent colour of every skin; the
+        # old "LV" monogram did not.
+        self.assertIn("<svg", mark)
+        self.assertIn('stroke="currentColor"', mark)
+        self.assertNotIn("LV", mark)
+        self.assertIn("color:var(--accent)", self.css.split(".lv-mark{", 1)[1][:160])
+
+    def test_follow_file_picker_is_a_searchable_combobox(self):
+        # The native <select> stays in the markup as the source of truth, so
+        # loadLive/startLive keep reading a single value.
+        self.assertIn('id="live-file"', self.html)
+        self.assertIn('id="live-file-input"', self.html)
+        self.assertIn('id="live-file-list"', self.html)
+        self.assertIn('role="combobox"', self.html)
+        self.assertIn('role="listbox"', self.html)
+        for name in ("renderCombo", "openCombo", "closeCombo", "commitCombo", "moveCombo"):
+            self.assertIn(f"function {name}(", self.js)
+        self.assertIn(".lv-combo-list{", self.css)
+        self.assertIn(".lv-combo-native{display:none;}", self.css)
+
+    def test_combo_keeps_the_toolbar_layout(self):
+        # The popup is absolutely positioned inside the existing field, so the
+        # toolbar row keeps its original height and column count.
+        self.assertIn(".lv-combo{position:relative", self.css)
+        self.assertIn("position:absolute", self.css.split(".lv-combo-list{", 1)[1][:200])
+        toolbar = self.html.split('id="panel-live"', 1)[1].split("</div>\n          <div id=", 1)[0]
+        self.assertEqual(4, toolbar.count('class="lv-field'))
+
 
 class TranslationTests(unittest.TestCase):
     @classmethod

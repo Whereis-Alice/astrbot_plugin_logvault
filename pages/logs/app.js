@@ -60,6 +60,7 @@ const state = {
   sort: "mtime",
   allFiles: [],
   live: { id: "", position: 0, entries: [], timer: null, busy: false, dropped: 0 },
+  combo: { options: [], visible: [], query: "", active: -1, open: false },
   view: { file: null, position: 0, entries: [], timer: null, busy: false },
   toastTimer: null,
 };
@@ -1037,12 +1038,159 @@ function renderLive(jump) {
   }
 }
 
+// The follow-file picker is a searchable combobox on top of a hidden native
+// <select>. The select stays the single source of truth so every existing
+// reader (loadLive, startLive) and its "change" event keep working unchanged.
+function comboLabel(item) {
+  return (item.relative || item.name || "") + " · " + formatSize(item.size);
+}
+
+function comboHaystack(item) {
+  return (
+    (item.relative || "") +
+    " " +
+    (item.name || "") +
+    " " +
+    (item.category_name || "") +
+    " " +
+    sourceLabel(item.source, item.source_kind)
+  ).toLowerCase();
+}
+
+function comboTokens() {
+  return state.combo.query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+}
+
+function comboFiltered() {
+  const tokens = comboTokens();
+  if (!tokens.length) return state.combo.options.slice();
+  return state.combo.options.filter((item) => {
+    const hay = comboHaystack(item);
+    return tokens.every((token) => hay.indexOf(token) !== -1);
+  });
+}
+
+function comboOptionHtml(item, index, needle) {
+  const classes = ["lv-combo-option"];
+  if (index === state.combo.active) classes.push("is-active");
+  if (item.id === state.live.id) classes.push("is-current");
+  return (
+    '<div class="' + classes.join(" ") + '" role="option" data-index="' + index +
+    '" data-id="' + esc(item.id) + '" aria-selected="' + (item.id === state.live.id) + '">' +
+    '<span class="lv-combo-name">' + highlight(item.relative || item.name, needle) + "</span>" +
+    '<span class="lv-combo-size">' + esc(formatSize(item.size)) + "</span>" +
+    "</div>"
+  );
+}
+
+function renderCombo() {
+  const box = el("live-file-list");
+  if (!box) return;
+  const items = comboFiltered();
+  state.combo.visible = items;
+  if (!items.length) {
+    state.combo.active = -1;
+    box.innerHTML =
+      '<div class="lv-combo-empty">' + esc(t("live.noMatch", "没有匹配的文件")) + "</div>";
+    return;
+  }
+  if (state.combo.active >= items.length) state.combo.active = items.length - 1;
+  if (state.combo.active < 0) {
+    const at = items.findIndex((item) => item.id === state.live.id);
+    state.combo.active = at === -1 ? 0 : at;
+  }
+  const needle = comboTokens()[0] || "";
+  const html = [];
+  let group = null;
+  items.forEach((item, index) => {
+    if (item.source !== group) {
+      group = item.source;
+      html.push(
+        '<div class="lv-combo-group">' +
+          esc(sourceLabel(item.source, item.source_kind)) +
+          "</div>"
+      );
+    }
+    html.push(comboOptionHtml(item, index, needle));
+  });
+  box.innerHTML = html.join("");
+  const active = box.querySelector(".lv-combo-option.is-active");
+  if (active && typeof active.scrollIntoView === "function") {
+    active.scrollIntoView({ block: "nearest" });
+  }
+}
+
+function comboSync() {
+  const input = el("live-file-input");
+  if (!input) return;
+  const current = state.combo.options.find((item) => item.id === state.live.id);
+  input.value = current ? comboLabel(current) : "";
+  input.title = current ? current.relative || current.name || "" : "";
+}
+
+function openCombo() {
+  const box = el("live-file-list");
+  const wrap = el("live-file-combo");
+  const input = el("live-file-input");
+  if (!box || !wrap || !input || !state.combo.options.length) return;
+  state.combo.open = true;
+  state.combo.query = "";
+  state.combo.active = -1;
+  box.hidden = false;
+  wrap.classList.add("is-open");
+  input.setAttribute("aria-expanded", "true");
+  if (input.value) input.select();
+  renderCombo();
+}
+
+function closeCombo() {
+  const box = el("live-file-list");
+  const wrap = el("live-file-combo");
+  const input = el("live-file-input");
+  state.combo.open = false;
+  state.combo.query = "";
+  state.combo.active = -1;
+  if (box) box.hidden = true;
+  if (wrap) wrap.classList.remove("is-open");
+  if (input) input.setAttribute("aria-expanded", "false");
+  comboSync();
+}
+
+function commitCombo(id) {
+  const select = el("live-file");
+  if (!select || !id) return;
+  const changed = id !== state.live.id;
+  select.value = id;
+  state.live.id = id;
+  closeCombo();
+  if (changed) select.dispatchEvent(new Event("change"));
+}
+
+function moveCombo(step) {
+  if (!state.combo.open) {
+    openCombo();
+    return;
+  }
+  const total = state.combo.visible.length;
+  if (!total) return;
+  const next = (state.combo.active + step + total) % total;
+  state.combo.active = next;
+  renderCombo();
+}
+
 function buildLiveFiles() {
   const select = el("live-file");
   if (!select) return;
   const followable = state.allFiles.filter((item) => !item.compressed);
   if (!followable.length) {
+    state.combo.options = [];
     select.innerHTML = '<option value="">' + esc(t("live.noFile", "暂无可跟随文件")) + "</option>";
+    const empty = el("live-file-input");
+    if (empty) {
+      empty.value = "";
+      empty.placeholder = t("live.noFile", "暂无可跟随文件");
+    }
+    closeCombo();
     return;
   }
   const bySource = new Map();
@@ -1050,6 +1198,7 @@ function buildLiveFiles() {
     if (!bySource.has(item.source)) bySource.set(item.source, []);
     bySource.get(item.source).push(item);
   }
+  const ordered = [];
   const html = [];
   for (const [source, items] of bySource) {
     items.sort((a, b) => (b.mtime || 0) - (a.mtime || 0));
@@ -1057,22 +1206,28 @@ function buildLiveFiles() {
       '<optgroup label="' + esc(sourceLabel(source, items[0].source_kind)) + '">'
     );
     for (const item of items) {
+      ordered.push(item);
       html.push(
         '<option value="' + esc(item.id) + '">' +
-          esc((item.relative || item.name) + " · " + formatSize(item.size)) +
+          esc(comboLabel(item)) +
           "</option>"
       );
     }
     html.push("</optgroup>");
   }
   select.innerHTML = html.join("");
+  state.combo.options = ordered;
   const preferred =
-    followable.find((item) => item.id === state.live.id) ||
-    followable.find((item) => item.relative === "all/all.log" && item.source === "current") ||
-    followable.find((item) => item.active) ||
-    followable[0];
+    ordered.find((item) => item.id === state.live.id) ||
+    ordered.find((item) => item.relative === "all/all.log" && item.source === "current") ||
+    ordered.find((item) => item.active) ||
+    ordered[0];
   state.live.id = preferred.id;
   select.value = preferred.id;
+  const input = el("live-file-input");
+  if (input) input.placeholder = t("placeholder.liveFile", "搜索或选择日志文件");
+  if (state.combo.open) renderCombo();
+  else comboSync();
 }
 
 async function loadLive(reset) {
@@ -1468,6 +1623,7 @@ async function cleanNow() {
 const PLACEHOLDERS = [
   ["bundle-plugin", "placeholder.plugin"],
   ["live-keyword", "placeholder.liveKeyword"],
+  ["live-file-input", "placeholder.liveFile"],
   ["category-filter", "placeholder.category"],
   ["file-filter", "placeholder.file"],
   ["search-keyword", "placeholder.search"],
@@ -1563,6 +1719,58 @@ function bindEvents() {
     state.live.entries = [];
     state.live.position = 0;
     loadLive(false).then(() => startLive());
+  });
+  el("live-file-input").addEventListener("focus", openCombo);
+  el("live-file-input").addEventListener("mousedown", (event) => {
+    if (state.combo.open) return;
+    openCombo();
+    if (document.activeElement === event.target) event.preventDefault();
+  });
+  el("live-file-input").addEventListener("input", (event) => {
+    state.combo.query = event.target.value;
+    state.combo.active = 0;
+    if (!state.combo.open) {
+      const box = el("live-file-list");
+      const wrap = el("live-file-combo");
+      state.combo.open = true;
+      if (box) box.hidden = false;
+      if (wrap) wrap.classList.add("is-open");
+      event.target.setAttribute("aria-expanded", "true");
+    }
+    renderCombo();
+  });
+  el("live-file-input").addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      moveCombo(1);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      moveCombo(-1);
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      const pick = state.combo.visible[state.combo.active];
+      if (pick) commitCombo(pick.id);
+    } else if (event.key === "Escape") {
+      if (state.combo.open) event.stopPropagation();
+      closeCombo();
+    }
+  });
+  el("live-file-input").addEventListener("blur", () => {
+    window.setTimeout(() => {
+      if (document.activeElement !== el("live-file-input")) closeCombo();
+    }, 0);
+  });
+  el("live-file-list").addEventListener("mousedown", (event) => event.preventDefault());
+  el("live-file-list").addEventListener("click", (event) => {
+    const option = event.target.closest(".lv-combo-option");
+    if (option) commitCombo(option.dataset.id);
+  });
+  document.addEventListener("mousedown", (event) => {
+    if (!state.combo.open) return;
+    const node = event.target;
+    if (!node || typeof node.closest !== "function" || !node.closest("#live-file-combo")) {
+      closeCombo();
+    }
   });
   el("live-level").addEventListener("change", () => renderLive(true));
   el("live-tag").addEventListener("change", () => renderLive(true));
