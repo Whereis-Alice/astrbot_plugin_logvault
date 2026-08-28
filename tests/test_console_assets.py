@@ -14,6 +14,7 @@ from core.command_handler import CommandHandler
 from core.log_cleaner import LogCleaner
 
 PAGE_DIR = PLUGIN_ROOT / "pages" / "logs"
+ASSET_DIR = PLUGIN_ROOT / "assets"
 I18N_DIR = PLUGIN_ROOT / ".astrbot-plugin" / "i18n"
 
 
@@ -239,6 +240,45 @@ class TranslationTests(unittest.TestCase):
         for key in expected:
             self.assertIn(key, available)
 
+
+class BrandAssetTests(unittest.TestCase):
+    """The logo lives in assets/ and the console must not fork its own copy."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.svg = (ASSET_DIR / "logo.svg").read_text(encoding="utf-8")
+        cls.html = (PAGE_DIR / "index.html").read_text(encoding="utf-8")
+
+    def test_the_vector_mark_inherits_the_current_colour(self):
+        self.assertIn('stroke="currentColor"', self.svg)
+        self.assertIn("<title>LogVault</title>", self.svg)
+        self.assertIn('viewBox="0 0 24 24"', self.svg)
+
+    def test_the_console_header_reuses_the_asset_geometry(self):
+        start = self.html.index('<span class="lv-mark"')
+        end = self.html.index("</span>", start)
+        inline = re.findall(r'd="([^"]+)"', self.html[start:end])
+        asset = re.findall(r'd="([^"]+)"', self.svg)
+        self.assertEqual(3, len(asset))
+        self.assertEqual(asset, inline)
+
+    def test_the_raster_and_social_derivatives_are_committed(self):
+        for name in (
+            "logo-badge.svg",
+            "logo-512.png",
+            "logo-256.png",
+            "logo-128.png",
+            "logo-32.png",
+            "social-preview.png",
+        ):
+            path = ASSET_DIR / name
+            with self.subTest(asset=name):
+                self.assertTrue(path.is_file(), f"missing {name}")
+                self.assertGreater(path.stat().st_size, 0)
+
+    def test_the_readme_shows_the_logo(self):
+        readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("assets/logo-128.png", readme)
 
 if __name__ == "__main__":
     unittest.main()

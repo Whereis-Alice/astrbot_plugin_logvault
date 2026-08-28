@@ -2,6 +2,26 @@
 
 本文件记录 LogVault 的版本变更。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.3.1] - 2026-08-29
+
+本次发布只做品牌资源，不改动任何功能逻辑。
+
+### 新增
+
+- **插件 Logo**。`assets/logo.svg` 是 24×24 单色矢量标记，采用「日志页 + 盾牌底」的轮廓：上半是折角文档（承接原 header 图标的语义，对应 Log），下半收成盾牌尖（对应 Vault）。描边使用 `currentColor`，放进任何皮肤都会跟随强调色，20px 下仍可辨识。
+- **渐变徽章与光栅图**。`assets/logo-badge.svg` 是 512×512 深蓝底渐变徽章，描边走蓝（`#4da3ff`）到青（`#37f5d4`）的渐变，呼应深空控制台与玻璃荧光两套皮肤的强调色；同时提供 `logo-512.png`、`logo-256.png`、`logo-128.png`、`logo-32.png` 四档光栅图。
+- **社交预览图**。`assets/social-preview.png`（1280×640）用于 GitHub 仓库的 Social preview，需要在仓库 Settings → General 手动上传。
+- **资源一致性测试**。新增测试断言 `assets/logo.svg` 使用 `currentColor`、WebUI header 内联的三段路径与 `assets/logo.svg` 完全一致、四档 PNG 与社交预览图存在，避免图标出现两份互相漂移的定义。
+
+### 变更
+
+- **WebUI 左上角品牌标记**换成新的 logo 标记，仍是内联 SVG（Page 静态资源不能跨目录引用），仍用 `currentColor` 跟随皮肤强调色。
+- **README 顶部**加入居中 logo。
+
+### 修复
+
+- **README 文档过期**。WebUI 章节仍写着「五个页签」且把打包下载算在运行总览里，实际 2.3.0 起导出已是独立的第六个页签；同步补上导出中心的范围、时间窗、级别与关键词、双格式与导出历史说明。
+
 ## [2.3.0] - 2026-08-28
 
 本次发布把导出从总览页的一张卡片扩展为独立的导出中心，并修复了两个此前未被发现的真实缺陷。
