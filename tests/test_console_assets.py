@@ -2,6 +2,7 @@
 
 import json
 import re
+import struct
 import sys
 import unittest
 from pathlib import Path
@@ -257,8 +258,8 @@ class BrandAssetTests(unittest.TestCase):
     def test_the_console_header_reuses_the_asset_geometry(self):
         start = self.html.index('<span class="lv-mark"')
         end = self.html.index("</span>", start)
-        inline = re.findall(r'd="([^"]+)"', self.html[start:end])
-        asset = re.findall(r'd="([^"]+)"', self.svg)
+        inline = re.findall(r'\sd="([^"]+)"', self.html[start:end])
+        asset = re.findall(r'\sd="([^"]+)"', self.svg)
         self.assertEqual(3, len(asset))
         self.assertEqual(asset, inline)
 
@@ -275,6 +276,26 @@ class BrandAssetTests(unittest.TestCase):
             with self.subTest(asset=name):
                 self.assertTrue(path.is_file(), f"missing {name}")
                 self.assertGreater(path.stat().st_size, 0)
+
+    def test_astrbot_picks_up_the_dashboard_icon(self):
+        """AstrBot resolves plugin icons from a root-level logo.png only."""
+
+        logo = PLUGIN_ROOT / "logo.png"
+        self.assertTrue(logo.is_file(), "AstrBot expects <plugin>/logo.png")
+        head = logo.read_bytes()[:24]
+        self.assertEqual(b"\x89PNG\r\n\x1a\n", head[:8])
+        width, height = struct.unpack(">II", head[16:24])
+        self.assertEqual((512, 512), (width, height))
+
+    def test_the_square_variant_shares_the_mark_geometry(self):
+        square = (ASSET_DIR / "logo-square.svg").read_text(encoding="utf-8")
+        self.assertEqual(
+            re.findall(r'\sd="([^"]+)"', self.svg),
+            re.findall(r'\sd="([^"]+)"', square),
+        )
+        # The dashboard applies its own corner radius, so this variant must
+        # stay full-bleed; a baked-in radius would clip twice.
+        self.assertNotIn("rx=", square)
 
     def test_the_readme_shows_the_logo(self):
         readme = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")

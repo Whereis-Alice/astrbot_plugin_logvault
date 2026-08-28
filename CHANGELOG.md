@@ -2,6 +2,19 @@
 
 本文件记录 LogVault 的版本变更。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.3.2] - 2026-08-29
+
+2.3.1 的 logo 只进了 `assets/`，AstrBot 插件管理页仍然显示占位图标。
+
+### 修复
+
+- **插件管理页不显示图标**。AstrBot 只从插件根目录的 `logo.png` 读取图标（`star_manager` 里硬编码的文件名，`metadata.yaml` 没有对应字段），2.3.1 把资源全放进了 `assets/`，因此卡片一直回落到默认占位图。现补上根目录 `logo.png`（512×512）。
+
+### 新增
+
+- **满幅方形图标源**。`assets/logo-square.svg` 是不带圆角的满幅变体，根目录 `logo.png` 由它渲染。Dashboard 会自己给插件图标加圆角裁切，图片自带圆角会造成二次裁切，因此这一档刻意不做圆角；带圆角的 `logo-badge.svg` 继续用于 README 与社交预览。
+- **图标一致性测试**。断言根目录 `logo.png` 存在、是 512×512 PNG，且 `logo-square.svg` 与 `logo.svg` 的三段路径一致、不含圆角。
+
 ## [2.3.1] - 2026-08-29
 
 本次发布只做品牌资源，不改动任何功能逻辑。
