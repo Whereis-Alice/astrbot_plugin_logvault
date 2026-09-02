@@ -188,7 +188,14 @@ class ConsoleAssetTests(unittest.TestCase):
             self.assertNotIn(call, self.js)
         self.assertIn("function askConfirm(", self.js)
         self.assertIn("function closeConfirm(", self.js)
-        self.assertEqual(3, self.js.count("await askConfirm({"))
+        # Count the guards against the destructive calls rather than against a
+        # magic number: a new mutating endpoint added without a dialog then
+        # fails here instead of quietly shipping an unguarded button.
+        destructive = re.findall(
+            r'apiPost\(\s*"(delete|clean|purge_logs|export_purge)"', self.js
+        )
+        self.assertEqual(4, len(set(destructive)))
+        self.assertEqual(len(destructive), self.js.count("await askConfirm({"))
 
     def test_confirm_dialog_markup_is_accessible(self):
         for ident in (
@@ -223,6 +230,22 @@ class ConsoleAssetTests(unittest.TestCase):
         # Downloads must go through the one-shot token endpoint.
         self.assertIn('"export_file"', self.js)
         self.assertIn('"export_plan"', self.js)
+
+    def test_the_purge_button_is_wired_end_to_end(self):
+        # Three files have to agree on one name: renaming the route, the
+        # console call or the button id in isolation leaves a control that
+        # looks live and does nothing.
+        core = PLUGIN_ROOT / "core"
+        api = (core / "web_api.py").read_text(encoding="utf-8")
+        cleaner = (core / "log_cleaner.py").read_text(encoding="utf-8")
+        self.assertIn('id="btn-purge"', self.html)
+        self.assertIn('apiPost("purge_logs"', self.js)
+        self.assertIn('("purge_logs", self.purge_logs, ["POST"]', api)
+        self.assertIn("await cleaner.purge_all()", api)
+        self.assertIn("async def purge_all(self)", cleaner)
+        # The purge report replaces the threshold row instead of printing
+        # limits it did not obey.
+        self.assertIn('data.mode === "purge"', self.js)
 
 
 class TranslationTests(unittest.TestCase):

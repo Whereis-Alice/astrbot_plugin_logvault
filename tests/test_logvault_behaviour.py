@@ -567,5 +567,91 @@ class ForcedCompressionTests(unittest.TestCase):
             self.assertEqual(1, result["skipped"]["active"])
 
 
+class PurgeAllTests(unittest.TestCase):
+    """The console's "purge logs" button empties the tree in a single pass."""
+
+    def test_every_closed_file_goes_and_active_streams_stay(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "all").mkdir()
+            (root / "plugins" / "demo").mkdir(parents=True)
+            (root / "exports").mkdir()
+            active = root / "all" / "all.log"
+            fallback = root / "plugins" / "demo" / "plugin.log.active"
+            rotated = root / "all" / "all.log.1"
+            plugin_rotated = root / "plugins" / "demo" / "plugin.log.1"
+            archived = root / "all" / "all.log.20260101-000000.gz"
+            bundle = root / "exports" / "logvault_20260101.zip"
+            # ".log." in the middle of the name makes this look like a log to
+            # the name filter; only the exports guard keeps it alive.
+            plain_export = root / "exports" / "logvault_all.log.txt"
+            for path in (active, fallback, rotated, plugin_rotated):
+                path.write_text(path.name + "\n", encoding="utf-8")
+            archived.write_bytes(b"gz-payload")
+            bundle.write_bytes(b"zip-payload")
+            plain_export.write_text("exported\n", encoding="utf-8")
+            doomed = (rotated, plugin_rotated, archived)
+            doomed_bytes = sum(path.stat().st_size for path in doomed)
+            scanned_bytes = doomed_bytes + sum(
+                path.stat().st_size for path in (active, fallback)
+            )
+
+            cleaner = LogCleaner(root, {})
+            result = asyncio.run(cleaner.purge_all())
+
+            self.assertEqual("purge", result["mode"])
+            self.assertEqual(3, result["deleted"])
+            self.assertEqual(doomed_bytes, result["freed_bytes"])
+            self.assertEqual(0, result["compressed"])
+            self.assertEqual(0, result["exports_deleted"])
+            self.assertEqual(5, result["scanned"])
+            self.assertEqual(scanned_bytes, result["total_bytes"])
+            self.assertEqual(2, result["skipped"]["active"])
+            # The pass obeyed no threshold, so echoing the configured values
+            # would misdescribe what just happened.
+            self.assertNotIn("thresholds", result)
+            self.assertNotIn("next_compress_in_hours", result)
+            for path in doomed:
+                self.assertFalse(path.exists(), path.name)
+            for path in (active, fallback, bundle, plain_export):
+                self.assertTrue(path.exists(), path.name)
+
+    def test_purge_ignores_the_retention_settings(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "all").mkdir()
+            rotated = root / "all" / "all.log.1"
+            rotated.write_text("rotated\n", encoding="utf-8")
+            cleaner = LogCleaner(
+                root,
+                {
+                    "enable_compression": False,
+                    "auto_clean_enabled": False,
+                    "max_age_days": 3650,
+                },
+            )
+
+            # Routine maintenance has nothing to do with this configuration...
+            maintenance = asyncio.run(cleaner.cleanup())
+            self.assertEqual(0, maintenance["compressed"])
+            self.assertEqual(0, maintenance["deleted"])
+            self.assertTrue(rotated.exists())
+
+            # ...but a purge is an explicit order, not a policy evaluation.
+            result = asyncio.run(cleaner.purge_all())
+            self.assertEqual(1, result["deleted"])
+            self.assertFalse(rotated.exists())
+
+    def test_empty_tree_reports_zeros_not_an_error(self):
+        with tempfile.TemporaryDirectory() as temp:
+            result = asyncio.run(LogCleaner(Path(temp), {}).purge_all())
+
+            self.assertEqual(0, result["scanned"])
+            self.assertEqual(0, result["deleted"])
+            self.assertEqual(0, result["freed_bytes"])
+            self.assertEqual(0, result["total_bytes"])
+            self.assertEqual(0, result["skipped"]["active"])
+
+
 if __name__ == "__main__":
     unittest.main()

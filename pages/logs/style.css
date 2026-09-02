@@ -177,6 +177,14 @@ html[data-skin="glass"] .lv-tab.is-active,html[data-skin="synthwave"] .lv-tab.is
 .lv-panel.is-active{display:flex;}
 .lv-panel[hidden]{display:none;}
 #panel-live,#panel-files{overflow:hidden;padding-bottom:0;}
+/* A column flex child may shrink below its content, and .lv-card sets
+   overflow:hidden -- which makes its automatic minimum size 0 instead of its
+   min-content height.  Cards were therefore squashed and clipped their own
+   contents, and because nothing overflowed the panel never grew a scrollbar:
+   the bottom of the overview was silently unreachable.  Panels that own an
+   inner scroller (.lv-stream / .lv-split / .lv-results) opt back into growing
+   further down this file, where the later rule wins at equal specificity. */
+.lv-panel > *{flex:0 0 auto;}
 
 /* ---------- generic surfaces ---------- */
 .lv-card{

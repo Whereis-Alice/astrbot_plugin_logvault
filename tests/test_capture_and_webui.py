@@ -435,6 +435,26 @@ class WebApiSurfaceTests(unittest.TestCase):
             self.assertTrue((host / "astrbot.log.1").exists())
             self.assertFalse((root / "errors" / "error.log.1").exists())
 
+    def test_the_active_fallback_is_not_deletable(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = self._seed(temp)
+            # _prepare_log_path falls back to "<name>.log.active" when a stale
+            # directory squats on the canonical path, and a handler holds that
+            # file open -- so it has to be protected exactly like ".log".
+            fallback = root / "all" / "all.log.active"
+            fallback.write_text("active fallback\n", encoding="utf-8")
+            command = CommandHandler(root, LogCleaner(root, {}))
+            separator = CommandHandler.FILE_ID_SEPARATOR
+
+            files = {item["relative"]: item for item in command.list_files("current")}
+            self.assertTrue(files["all/all.log.active"]["active"])
+            self.assertFalse(files["all/all.log.active"]["deletable"])
+
+            result = command.delete_files([f"current{separator}all/all.log.active"])
+            self.assertEqual(0, result["deleted"])
+            self.assertEqual(1, len(result["skipped"]))
+            self.assertTrue(fallback.exists())
+
     def test_overview_payload_exposes_sources_and_categories(self):
         with tempfile.TemporaryDirectory() as temp:
             root = self._seed(temp)

@@ -36,6 +36,26 @@ _compress_executor = ThreadPoolExecutor(
 _ROTATION_SLOT_RE = re.compile(r"^(?P<base>.+\.log)\.(?P<slot>\d+)$", re.IGNORECASE)
 
 
+#: Suffixes of files a logging handler may still hold open.  ``.log`` is the
+#: canonical stream and ``.log.active`` is the fallback :func:`_prepare_log_path`
+#: creates when a stale directory occupies the canonical path.
+_ACTIVE_LOG_SUFFIXES = (".log", ".log.active")
+
+
+def is_active_log_name(name: str) -> bool:
+    """True when *name* belongs to a stream a handler is still writing to.
+
+    Compressing or unlinking one of these looks fine on POSIX -- the call
+    succeeds -- but the handler keeps writing into an unlinked inode and every
+    later record disappears without an error.  The rule was duplicated in the
+    cleaner, the compressor and the console file list, and the console copy had
+    already drifted: it only knew about ``.log``.
+    """
+
+    lowered = name.casefold()
+    return lowered.endswith(_ACTIVE_LOG_SUFFIXES)
+
+
 def archive_destination(source: Path, mtime: float | None = None) -> Path:
     """Return a collision-free ``.gz`` path for a closed rotated log.
 

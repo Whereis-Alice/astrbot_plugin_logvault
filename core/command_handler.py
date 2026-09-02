@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from .log_cleaner import LogCleaner
+from .log_handler import is_active_log_name
 
 
 _LOG_RECORD_START_RE = re.compile(r"^\s*\[\d{4}-\d{2}-\d{2}[ T]")
@@ -1698,6 +1699,7 @@ class CommandHandler:
                 except ValueError:
                     relative = path.name
                 lowered = path.name.casefold()
+                active = is_active_log_name(lowered)
                 files.append(
                     {
                         "id": self.make_file_id(label, root, path),
@@ -1706,13 +1708,13 @@ class CommandHandler:
                         "size": stat.st_size,
                         "mtime": stat.st_mtime,
                         "compressed": lowered.endswith(".gz"),
-                        "active": lowered.endswith(".log"),
+                        "active": active,
                         "source": label,
                         "source_kind": self._source_kind(label),
                         "category": key,
                         "category_name": name,
                         "category_kind": kind,
-                        "deletable": label == "current" and not lowered.endswith(".log"),
+                        "deletable": label == "current" and not active,
                     }
                 )
         files.sort(key=lambda item: item["mtime"], reverse=True)
@@ -1882,7 +1884,7 @@ class CommandHandler:
                     {"id": str(file_id), "reason": "只允许删除当前数据目录中的日志"}
                 )
                 continue
-            if path.name.casefold().endswith(".log"):
+            if is_active_log_name(path.name):
                 skipped.append(
                     {"id": str(file_id), "reason": "正在写入的日志不可删除"}
                 )

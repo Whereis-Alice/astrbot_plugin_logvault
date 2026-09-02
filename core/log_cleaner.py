@@ -12,7 +12,7 @@ from pathlib import Path
 
 # Archive naming is shared with the rotating handlers so a slot recycled by
 # doRollover and a slot compressed here can never claim the same .gz name.
-from .log_handler import archive_destination
+from .log_handler import archive_destination, is_active_log_name
 
 
 @dataclass(frozen=True)
@@ -138,6 +138,60 @@ class LogCleaner:
             "max_total_size_mb": max_size_mb if auto_clean_enabled else None,
         }
         return result
+
+    async def purge_all(self) -> dict:
+        """Delete every closed log file, ignoring every configured threshold.
+
+        This backs the console's "purge logs" button.  An operator who wants the
+        directory empty should not have to raise ``compression_after_days``,
+        lower ``max_age_days`` and run two passes; nor should they have to tick
+        several hundred rows on the file list.
+
+        Active streams survive on purpose (see :func:`is_active_log_name`), and
+        so do export bundles: those are download artefacts rather than logs and
+        already have their own purge action.  The report reuses the shape of
+        :meth:`cleanup` so the console renders it in the same card, but it
+        carries no ``thresholds`` key -- this run obeyed none of them, and
+        reporting the configured values here would suggest otherwise.
+        """
+
+        files = await asyncio.to_thread(self._scan_log_files)
+        doomed = [info for info in files if not info.is_active]
+        deleted, freed = await asyncio.to_thread(self._unlink_all, doomed)
+        return {
+            "compressed": 0,
+            "deleted": deleted,
+            "freed_bytes": freed,
+            "exports_deleted": 0,
+            "forced": False,
+            "mode": "purge",
+            "scanned": len(files),
+            "total_bytes": sum(info.size for info in files),
+            "skipped": {
+                "active": len(files) - len(doomed),
+                "already_compressed": 0,
+                "too_new": 0,
+            },
+        }
+
+    @staticmethod
+    def _unlink_all(targets: list[LogFileInfo]) -> tuple[int, int]:
+        """Unlink each target, reporting what actually went away."""
+
+        deleted = 0
+        freed = 0
+        for info in targets:
+            try:
+                # Re-stat instead of trusting the snapshot: a file that grew
+                # or shrank since the scan would otherwise skew freed_bytes.
+                size = info.path.stat().st_size
+                info.path.unlink()
+            except OSError:
+                # A vanished or locked file must not abort the rest of the pass.
+                continue
+            deleted += 1
+            freed += size
+        return deleted, freed
 
     def _explain(self, files: list[LogFileInfo], compression_days: int) -> dict:
         """Summarise the scan and why each group is out of scope."""
@@ -269,12 +323,7 @@ class LogCleaner:
         return count
 
     async def _compress_file(self, filepath: Path) -> bool:
-        file_name = filepath.name.casefold()
-        if (
-            not filepath.is_file()
-            or file_name.endswith(".log")
-            or file_name.endswith(".log.active")
-        ):
+        if not filepath.is_file() or is_active_log_name(filepath.name):
             return False
         try:
             source_stat = filepath.stat()
@@ -354,7 +403,7 @@ class LogCleaner:
                         size=stat.st_size,
                         mtime=datetime.fromtimestamp(stat.st_mtime),
                         is_compressed=name.endswith(".gz"),
-                        is_active=name.endswith(".log") or name.endswith(".log.active"),
+                        is_active=is_active_log_name(name),
                     )
                 )
             except (OSError, ValueError):

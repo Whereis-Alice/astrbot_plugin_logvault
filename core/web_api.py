@@ -222,6 +222,7 @@ class LogVaultWebApi:
             ("bundle", self.bundle, ["GET"], "LogVault 按天数打包下载"),
             ("delete", self.delete, ["POST"], "LogVault 删除轮换日志"),
             ("clean", self.clean, ["POST"], "LogVault 手动清理"),
+            ("purge_logs", self.purge_logs, ["POST"], "LogVault 清空全部日志"),
             ("capture", self.capture, ["GET"], "LogVault 捕获状态诊断"),
             ("export_plan", self.export_plan, ["POST"], "LogVault 导出预检"),
             ("export_file", self.export_file, ["GET"], "LogVault 导出下载"),
@@ -385,6 +386,18 @@ class LogVaultWebApi:
         # "deep" is an explicit user action, so it ignores the age threshold
         # and archives every closed rotated file right away.
         result = await cleaner.cleanup(force_compress=bool(payload.get("deep")))
+        return json_response({"status": "ok", "data": result})
+
+    async def purge_logs(self):
+        """Delete every closed log file regardless of the retention settings."""
+
+        commands = self.commands
+        if commands is None:
+            return self._not_ready()
+        cleaner = getattr(commands, "cleaner", None)
+        if cleaner is None:
+            return error_response("清理器尚未初始化", status_code=503)
+        result = await cleaner.purge_all()
         return json_response({"status": "ok", "data": result})
 
     async def capture(self):

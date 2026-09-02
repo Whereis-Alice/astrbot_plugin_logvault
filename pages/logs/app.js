@@ -1,4 +1,4 @@
-// LogVault console (v2.3.4)
+// LogVault console (v2.3.5)
 // A tab based operations console for the plugin Web API in core/web_api.py.
 // Layout rules: every flex/grid child sets min-width:0 in style.css, so long
 // paths, plugin names and warnings truncate instead of stretching the page.
@@ -783,25 +783,42 @@ function renderCleanReport(result) {
   const data = result || {};
   const skipped = data.skipped || {};
   const limits = data.thresholds || {};
+  // A purge obeys no threshold and never compresses, so the columns that
+  // would read a constant zero are dropped: showing "压缩 0" next to
+  // thresholdText({}) reads as "compression is disabled", which is wrong.
+  const purge = data.mode === "purge";
   const acted = (data.compressed || 0) + (data.deleted || 0);
+  const freedText =
+    t("toast.deleted", "已删除") + " " + (data.deleted || 0) + " · " +
+    t("toast.freed", "释放") + " " + formatSize(data.freed_bytes);
   const rows = [];
   rows.push([
     t("clean.acted", "本次动作"),
-    t("toast.compressed", "压缩") + " " + (data.compressed || 0) + " · " +
-      t("toast.deleted", "已删除") + " " + (data.deleted || 0) + " · " +
-      t("toast.freed", "释放") + " " + formatSize(data.freed_bytes),
+    purge
+      ? freedText
+      : t("toast.compressed", "压缩") + " " + (data.compressed || 0) + " · " + freedText,
   ]);
   rows.push([
     t("clean.scanned", "扫描范围"),
     (data.scanned || 0) + " " + t("unit.file", "个") + " · " + formatSize(data.total_bytes),
   ]);
+  const activeText = t("clean.skipActive", "写入中") + " " + (skipped.active || 0);
   rows.push([
     t("clean.skipped", "跳过"),
-    t("clean.skipActive", "写入中") + " " + (skipped.active || 0) + " · " +
-      t("clean.skipGz", "已归档") + " " + (skipped.already_compressed || 0) + " · " +
-      t("clean.skipNew", "未到压缩时间") + " " + (skipped.too_new || 0),
+    purge
+      ? activeText
+      : activeText + " · " +
+        t("clean.skipGz", "已归档") + " " + (skipped.already_compressed || 0) + " · " +
+        t("clean.skipNew", "未到压缩时间") + " " + (skipped.too_new || 0),
   ]);
-  rows.push([t("clean.limits", "生效阈值"), thresholdText(limits, data.forced)]);
+  rows.push(
+    purge
+      ? [
+          t("clean.mode", "执行方式"),
+          t("clean.modePurge", "清空全部：忽略阈值，删除所有已关闭的日志"),
+        ]
+      : [t("clean.limits", "生效阈值"), thresholdText(limits, data.forced)]
+  );
   if (data.next_compress_in_hours !== null && data.next_compress_in_hours !== undefined) {
     rows.push([
       t("clean.next", "下一批压缩"),
@@ -823,7 +840,11 @@ function renderCleanReport(result) {
   const note = acted
     ? ""
     : '<p class="lv-muted">' +
-      esc(t("clean.noop", "所有文件都还在阈值内，无需压缩或删除；这属于正常状态。")) +
+      esc(
+        purge
+          ? t("clean.purgeNoop", "当前只有正在写入的日志，没有已关闭的文件可以删除。")
+          : t("clean.noop", "所有文件都还在阈值内，无需压缩或删除；这属于正常状态。")
+      ) +
       "</p>";
   body.innerHTML = kvHtml(rows) + note;
   // Waiting a day for the first archive is the usual reason a manual run
@@ -843,6 +864,12 @@ function renderCleanReport(result) {
     pill.dataset.kind = acted ? "ok" : "info";
   }
   card.hidden = false;
+  // The card is the last block of a scrollable panel, so a run triggered from
+  // the header would otherwise answer below the fold: the toast says three
+  // zeros and the explanation stays out of sight.
+  if (typeof card.scrollIntoView === "function") {
+    card.scrollIntoView({ block: "nearest" });
+  }
 }
 
 function renderDistCard() {
@@ -2275,7 +2302,9 @@ async function cleanNow(deep) {
   if (!ok) return;
   // Both buttons run the same pass, so lock them together: a second click
   // while the first pass is still scanning would duplicate the work.
-  const buttons = [el("btn-clean"), el("btn-clean-deep")].filter(Boolean);
+  const buttons = [el("btn-clean"), el("btn-clean-deep"), el("btn-purge")].filter(
+    Boolean
+  );
   buttons.forEach((node) => {
     node.disabled = true;
   });
@@ -2292,6 +2321,69 @@ async function cleanNow(deep) {
     renderCleanReport(result);
     // The report lives on the overview panel, and a run that changed nothing is
     // exactly the case where the user needs to read it.
+    if (state.tab !== "overview") setTab("overview");
+    await loadOverview(true);
+  } catch (err) {
+    toast(errorText(err), "error");
+  } finally {
+    buttons.forEach((node) => {
+      node.disabled = false;
+    });
+  }
+}
+
+// The header twin of cleanNow: no thresholds, no compression, just an empty
+// log directory.  Kept separate from cleanNow because the confirmation, the
+// endpoint and the report all differ, and folding a "delete everything" flag
+// into the routine maintenance path is exactly how such a flag gets clicked
+// by accident.
+async function purgeLogs() {
+  // The file list already knows which rows the purge will remove ("deletable"
+  // is computed with the same rule the cleaner uses), so the confirmation can
+  // name a number and a size instead of asking for blind trust.  It is a
+  // snapshot, hence advisory: the server recounts before deleting.
+  const doomed = (state.allFiles || []).filter((item) => item.deletable);
+  const bytes = doomed.reduce((sum, item) => sum + (item.size || 0), 0);
+  const notes = [];
+  if (doomed.length) {
+    notes.push(
+      t("confirm.purgeLogsCount", "将删除 %s 个已关闭的日志文件，约 %s")
+        .replace("%s", String(doomed.length))
+        .replace("%s", formatSize(bytes))
+    );
+  }
+  notes.push(t("confirm.purgeLogsNote", "正在写入的日志与导出包不会被删除。"));
+  const ok = await askConfirm({
+    title: t("confirm.purgeLogsTitle", "清空全部日志"),
+    message: t(
+      "confirm.purgeLogs",
+      "删除所有已轮换、已归档的日志文件？该操作不可恢复。"
+    ),
+    note: notes.join(" · "),
+    confirmLabel: t("action.confirmPurgeLogs", "确认清空"),
+    danger: true,
+  });
+  if (!ok) return;
+  // Lock the maintenance buttons together: a purge running against the same
+  // tree as a compression pass would race for the same files.
+  const buttons = [el("btn-purge"), el("btn-clean"), el("btn-clean-deep")].filter(
+    Boolean
+  );
+  buttons.forEach((node) => {
+    node.disabled = true;
+  });
+  try {
+    const result = await apiPost("purge_logs", {});
+    const parts = [
+      t("toast.deleted", "已删除") + " " + (result.deleted || 0),
+      t("toast.freed", "释放") + " " + formatSize(result.freed_bytes),
+    ];
+    if (!result.deleted) parts.push(t("toast.purgeNoop", "没有可删除的已关闭日志"));
+    toast(parts.join(" · "));
+    // Same reasoning as cleanNow: the report is on the overview panel, and a
+    // run that deleted nothing is exactly when it has to be read.  loadOverview
+    // then drops the now dead ids from state.selected.
+    renderCleanReport(result);
     if (state.tab !== "overview") setTab("overview");
     await loadOverview(true);
   } catch (err) {
@@ -2321,6 +2413,7 @@ const LABELS = [
   ["skin-label", "skin.label"],
   ["btn-refresh", "action.refresh"],
   ["btn-clean", "action.clean"],
+  ["btn-purge", "action.purgeLogs"],
   ["drawer-close", "action.close"],
 ];
 const ARIA = [
@@ -2383,6 +2476,7 @@ function bindEvents() {
   el("btn-refresh").addEventListener("click", () => loadOverview(false));
   el("btn-clean").addEventListener("click", () => cleanNow(false));
   el("btn-clean-deep").addEventListener("click", () => cleanNow(true));
+  el("btn-purge").addEventListener("click", () => purgeLogs());
 
   el("warn-banner").addEventListener("click", (event) => {
     const toggle = event.target.closest("[data-banner-toggle]");
