@@ -24,7 +24,7 @@ from .core.web_api import LogVaultWebApi
 
 
 PLUGIN_ID = "astrbot_plugin_logvault"
-PLUGIN_VERSION = "2.3.2"
+PLUGIN_VERSION = "2.3.3"
 LEGACY_PLUGIN_ID = "astrbot_plugin_logplus"
 LOG_LEVELS = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40, "CRITICAL": 50}
 ASTRBOT_PLUGIN_LOGGER_PREFIX = "astrbot.plugin."

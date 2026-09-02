@@ -2,6 +2,24 @@
 
 本文件记录 LogVault 的版本变更。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.3.3] - 2026-09-03
+
+WebUI 的「立即清理」点下去没有任何反应。根因不是 AstrBot 的确认弹窗跟别人不一样，而是插件页被放在一个缺少 `allow-modals` 的 iframe sandbox 里，浏览器把原生确认框静默拦截了。
+
+### 修复
+
+- **三个危险操作的按钮点了没反应**。AstrBot Dashboard 用 `sandbox="allow-scripts allow-forms allow-downloads"` 的 iframe 承载插件页，其中没有 `allow-modals`，因此 `window.confirm()` 会被浏览器静默拦截并直接返回 `false`。「立即清理」「删除所选日志」「清空导出包」三处都是 `if (!确认) return;` 的写法，于是点下去既不弹窗也不报错，看起来就像按钮坏了。现在改为页内自绘的确认弹层，不再依赖浏览器原生对话框。
+- **皮肤 / 密度 / 页签偏好刷新即丢失**。同一个 sandbox 也没给 `allow-same-origin`，插件页运行在 opaque origin 下，`localStorage` 读写会抛 `SecurityError`。六套皮肤的选择从上线起就没有被记住过，而异常被 try/catch 吞掉了，所以连报错痕迹都没有。现在偏好改走插件自己的 Web API 落到 `data/console_prefs.json`，内存缓存与 `localStorage` 只在可用时充当加速层。
+
+### 新增
+
+- **页内确认弹层**。带三角警告图标、可选补充说明与红色实体主按钮。打开时焦点落在主按钮上并在弹层内做 Tab 循环，Escape、点击遮罩、取消按钮都会关闭弹层并把焦点还给触发它的按钮，取消路径不会发出任何请求。六套皮肤与两档密度下自适应（玻璃荧光额外加背景模糊），窄屏改为纵向铺满按钮，`prefers-reduced-motion` 下不做入场动画。
+- **控制台偏好端点**。新增 `prefs`（GET）与 `prefs_save`（POST），按白名单只接受 skin / density / tab 三个键，非法值直接丢弃；写入先写临时文件再用 `os.replace` 原子替换，避免刷新时读到半个文件。前端做 400ms 防抖并对内容指纹去重，连续切换皮肤只会落盘一次。
+- **六个新测试**（总数 92 → 98）。前端侧断言源码中不出现 `window.confirm` / `alert` / `prompt`、弹层标记具备 `role="dialog"` 与 aria 关联、偏好读写不依赖 `localStorage`；后端侧断言非法偏好被过滤、合并写入后不留 `.tmp` 残留、偏好文件损坏时回落为空配置。
+
+### 变更
+
+- **剪贴板兜底加固**。opaque origin 下 `navigator.clipboard` 会直接 reject，`execCommand` 兜底路径补上离屏定位、`focus()` 与 `setSelectionRange`，修正部分浏览器下复制出空内容的问题。
 ## [2.3.2] - 2026-08-29
 
 2.3.1 的 logo 只进了 `assets/`，AstrBot 插件管理页仍然显示占位图标。

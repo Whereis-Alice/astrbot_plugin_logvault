@@ -13,6 +13,7 @@ console.
 from __future__ import annotations
 
 import asyncio
+import json
 import secrets
 import time
 from pathlib import Path
@@ -137,6 +138,57 @@ async def _json_body() -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
+#: Console preferences that may be persisted, mapped to their allowed values.
+#: Anything outside these tables is dropped, so a hand-crafted POST can never
+#: smuggle arbitrary content into the plugin data directory.
+CONSOLE_PREFS: dict[str, tuple[str, ...]] = {
+    "skin": ("auto", "console", "daylight", "glass", "synthwave", "matrix"),
+    "density": ("compact", "cozy"),
+    "tab": ("overview", "live", "files", "search", "export", "diag"),
+}
+#: File under the plugin data directory that holds the persisted preferences.
+CONSOLE_PREFS_FILE = "console_prefs.json"
+
+
+def _sanitise_prefs(payload: Any) -> dict[str, str]:
+    """Keep only known keys whose value is one of the allowed choices."""
+
+    if not isinstance(payload, dict):
+        return {}
+    clean: dict[str, str] = {}
+    for key, allowed in CONSOLE_PREFS.items():
+        value = payload.get(key)
+        if isinstance(value, str) and value in allowed:
+            clean[key] = value
+    return clean
+
+
+def read_console_prefs(path: Path) -> dict[str, str]:
+    """Load the stored console preferences; anything unreadable yields {}."""
+
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return {}
+    try:
+        return _sanitise_prefs(json.loads(raw))
+    except ValueError:
+        return {}
+
+
+def write_console_prefs(path: Path, payload: Any) -> dict[str, str]:
+    """Merge ``payload`` into the stored preferences and return the result."""
+
+    merged = {**read_console_prefs(path), **_sanitise_prefs(payload)}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Written aside and swapped in, so a crash cannot leave a truncated file
+    # that would reset every preference on the next load.
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(merged, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+    tmp.replace(path)
+    return merged
+
+
 class LogVaultWebApi:
     """Register and serve the dashboard endpoints of the logs page."""
 
@@ -176,6 +228,8 @@ class LogVaultWebApi:
             ("export_history", self.export_history, ["GET"], "LogVault 导出历史"),
             ("export_download", self.export_download, ["GET"], "LogVault 历史包下载"),
             ("export_purge", self.export_purge, ["POST"], "LogVault 清理导出包"),
+            ("prefs", self.prefs, ["GET"], "LogVault 控制台偏好"),
+            ("prefs_save", self.prefs_save, ["POST"], "LogVault 控制台偏好保存"),
         )
         routes: list[str] = []
         for name, handler, methods, description in endpoints:
@@ -196,6 +250,16 @@ class LogVaultWebApi:
     @staticmethod
     def _not_ready():
         return error_response("LogVault 尚未初始化完成，请稍后重试", status_code=503)
+
+    @property
+    def _prefs_path(self) -> Path | None:
+        data_dir = getattr(self.plugin, "data_dir", None)
+        if not data_dir:
+            return None
+        try:
+            return Path(data_dir) / CONSOLE_PREFS_FILE
+        except TypeError:
+            return None
 
     # -- endpoints ------------------------------------------------------
 
@@ -432,3 +496,31 @@ class LogVaultWebApi:
             commands.delete_exports, [str(item) for item in raw_names], purge_all
         )
         return json_response({"status": "ok", "data": result})
+
+    # -- console preferences --------------------------------------------
+
+    async def prefs(self):
+        """Return the stored console preferences (skin, density, active tab).
+
+        The dashboard sandbox gives the plugin page an opaque origin, so
+        window.localStorage raises there and the console cannot remember
+        anything on its own.  A missing file is not an error; the console
+        then simply starts on its defaults.
+        """
+
+        path = self._prefs_path
+        if path is None:
+            return json_response({"status": "ok", "data": {"prefs": {}}})
+        prefs = await asyncio.to_thread(read_console_prefs, path)
+        return json_response({"status": "ok", "data": {"prefs": prefs}})
+
+    async def prefs_save(self):
+        path = self._prefs_path
+        if path is None:
+            return self._not_ready()
+        payload = await _json_body()
+        try:
+            prefs = await asyncio.to_thread(write_console_prefs, path, payload)
+        except OSError:
+            return error_response("控制台偏好写入失败", status_code=500)
+        return json_response({"status": "ok", "data": {"prefs": prefs}})

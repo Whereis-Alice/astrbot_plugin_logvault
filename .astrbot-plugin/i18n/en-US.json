@@ -6,11 +6,15 @@
   "pages": {
     "logs": {
       "action": {
+        "cancel": "Cancel",
         "clean": "Clean now",
         "clearView": "Clear",
         "clearWindow": "Clear window",
         "close": "Close",
         "collapse": "Collapse",
+        "confirm": "Confirm",
+        "confirmClean": "Start cleanup",
+        "confirmDelete": "Delete",
         "copy": "Copy",
         "delete": "Delete selected",
         "delete2": "Delete",
@@ -52,9 +56,17 @@
       },
       "confirm": {
         "clean": "Run compression and cleanup now? Expired logs will be deleted.",
+        "cleanNote": "Logs past the retention window are archived and expired archives are removed.",
+        "cleanTitle": "Clean now",
         "delete": "Delete the selected log files? This cannot be undone.",
+        "deleteCount": "%s file(s) selected",
+        "deleteTitle": "Delete log files",
         "purge": "Delete this bundle?",
-        "purgeAll": "Purge every export bundle? This cannot be undone."
+        "purgeAll": "Purge every export bundle? This cannot be undone.",
+        "purgeAllNote": "Every bundle kept in the export directory will be removed.",
+        "purgeAllTitle": "Purge bundles",
+        "purgeTitle": "Delete bundle",
+        "title": "Please confirm"
       },
       "density": {
         "compact": "Compact",

@@ -6,11 +6,15 @@
   "pages": {
     "logs": {
       "action": {
+        "cancel": "取消",
         "clean": "立即清理",
         "clearView": "清屏",
         "clearWindow": "清除时间",
         "close": "关闭",
         "collapse": "收起",
+        "confirm": "确认",
+        "confirmClean": "开始清理",
+        "confirmDelete": "确认删除",
         "copy": "复制",
         "delete": "删除所选",
         "delete2": "删除",
@@ -52,9 +56,17 @@
       },
       "confirm": {
         "clean": "立即执行压缩与清理？超期日志会被删除。",
+        "cleanNote": "超过保留天数的日志会被压缩归档，过期归档会被删除。",
+        "cleanTitle": "立即清理",
         "delete": "确认删除选中的日志文件？该操作不可恢复。",
+        "deleteCount": "已选中 %s 个文件",
+        "deleteTitle": "删除日志文件",
         "purge": "删除该导出包？",
-        "purgeAll": "清空全部导出包？该操作不可恢复。"
+        "purgeAll": "清空全部导出包？该操作不可恢复。",
+        "purgeAllNote": "导出目录下保留的历史包会被全部移除。",
+        "purgeAllTitle": "清空导出包",
+        "purgeTitle": "删除导出包",
+        "title": "需要确认"
       },
       "density": {
         "compact": "紧凑",

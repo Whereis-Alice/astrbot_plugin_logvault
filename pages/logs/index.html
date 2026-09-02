@@ -358,6 +358,34 @@
         </div>
       </div>
 
+      <div id="confirm-layer" class="lv-modal-layer" hidden>
+        <div class="lv-modal-veil" data-confirm-cancel></div>
+        <div
+          class="lv-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="confirm-title"
+          aria-describedby="confirm-text"
+        >
+          <div class="lv-modal-head">
+            <span class="lv-modal-ico" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 3.7 3 19.3a1.4 1.4 0 0 0 1.2 2.1h15.6a1.4 1.4 0 0 0 1.2-2.1Z" />
+                <path d="M12 9.5v4.6" />
+                <path d="M12 17.5h.01" />
+              </svg>
+            </span>
+            <h2 id="confirm-title">需要确认</h2>
+          </div>
+          <p id="confirm-text" class="lv-modal-text"></p>
+          <p id="confirm-note" class="lv-modal-note" hidden></p>
+          <div class="lv-modal-actions">
+            <button id="confirm-cancel" class="lv-btn lv-btn-ghost" type="button" data-confirm-cancel data-i18n="action.cancel">取消</button>
+            <button id="confirm-ok" class="lv-btn lv-btn-primary" type="button">确认</button>
+          </div>
+        </div>
+      </div>
+
       <div id="toast" class="lv-toast" role="status" hidden></div>
     </div>
     <script type="module" src="./app.js"></script>

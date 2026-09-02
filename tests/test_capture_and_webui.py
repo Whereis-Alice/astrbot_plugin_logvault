@@ -17,6 +17,7 @@ if str(PLUGIN_ROOT) not in sys.path:
 from core.command_handler import CommandHandler
 from core.log_cleaner import LogCleaner
 from core.loguru_capture import BootstrapBackfill, LoguruCapture
+from core.web_api import read_console_prefs, write_console_prefs
 
 
 def _stamp(days_ago: float = 0.0) -> str:
@@ -464,6 +465,46 @@ class CleanerIntervalTests(unittest.TestCase):
             LogCleaner(root, {"clean_interval_minutes": "oops"})._interval_seconds(),
             3600.0,
         )
+
+
+class ConsolePrefsTests(unittest.TestCase):
+    """The console page cannot use localStorage, so prefs live on disk.
+
+    The dashboard mounts the plugin page in an iframe without
+    allow-same-origin, which makes its origin opaque and every
+    window.localStorage access raise SecurityError.
+    """
+
+    def test_unknown_keys_and_values_are_dropped(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "console_prefs.json"
+            stored = write_console_prefs(
+                path,
+                {"skin": "glass", "density": "roomy", "tab": "diag", "evil": "x"},
+            )
+            self.assertEqual({"skin": "glass", "tab": "diag"}, stored)
+            self.assertEqual(stored, read_console_prefs(path))
+
+    def test_saving_merges_with_what_is_already_stored(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "nested" / "console_prefs.json"
+            write_console_prefs(path, {"skin": "matrix", "density": "cozy"})
+            merged = write_console_prefs(path, {"tab": "search"})
+            self.assertEqual(
+                {"skin": "matrix", "density": "cozy", "tab": "search"}, merged
+            )
+            self.assertFalse(path.with_suffix(".tmp").exists())
+
+    def test_missing_or_corrupt_files_read_as_empty(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "console_prefs.json"
+            self.assertEqual({}, read_console_prefs(path))
+            path.write_text("{not json", encoding="utf-8")
+            self.assertEqual({}, read_console_prefs(path))
+            path.write_text("[1, 2, 3]", encoding="utf-8")
+            self.assertEqual({}, read_console_prefs(path))
+            # A corrupt file must not block the next save either.
+            self.assertEqual({"tab": "live"}, write_console_prefs(path, {"tab": "live"}))
 
 
 if __name__ == "__main__":

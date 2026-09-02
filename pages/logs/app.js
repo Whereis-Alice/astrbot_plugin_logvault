@@ -1,7 +1,17 @@
-// LogVault console (v2.3.0)
+// LogVault console (v2.3.3)
 // A tab based operations console for the plugin Web API in core/web_api.py.
 // Layout rules: every flex/grid child sets min-width:0 in style.css, so long
 // paths, plugin names and warnings truncate instead of stretching the page.
+//
+// Sandbox rules: the dashboard mounts this page in an iframe sandboxed with
+// "allow-scripts allow-forms allow-downloads" only.  Without allow-modals the
+// native confirm()/alert()/prompt() dialogs are suppressed and return false,
+// and without allow-same-origin the origin is opaque so localStorage throws.
+// Therefore:
+//   * never call a native dialog -> await askConfirm() renders one in-page,
+//   * never trust localStorage alone -> readStore/writeStore mirror the value
+//     in memory and persist it through the prefs / prefs_save endpoints,
+//   * navigator.clipboard can reject -> copyStream falls back to execCommand.
 
 const bridge = window.AstrBotPluginPage;
 
@@ -73,6 +83,7 @@ const state = {
     historyLoaded: false,
   },
   toastTimer: null,
+  confirm: { resolve: null, origin: null },
 };
 
 const el = (id) => document.getElementById(id);
@@ -147,21 +158,85 @@ function debounce(fn, wait) {
   };
 }
 
+// -- preferences -----------------------------------------------------------
+// The plugin page runs in a sandboxed iframe without allow-same-origin, so its
+// origin is opaque and window.localStorage raises SecurityError on both read
+// and write.  Preferences are therefore held in memory for the session,
+// mirrored into localStorage when it happens to work (standalone preview), and
+// persisted server side through the prefs / prefs_save endpoints.
+
+const memoryStore = new Map();
+const PREF_KEYS = { skin: STORE_SKIN, density: STORE_DENSITY, tab: STORE_TAB };
+let prefSyncTimer = null;
+let prefSynced = "";
+
 function readStore(key, fallback) {
+  const cached = memoryStore.get(key);
+  if (cached !== undefined && cached !== "") return cached;
   try {
     const value = window.localStorage.getItem(key);
-    return value === null || value === "" ? fallback : value;
+    if (value !== null && value !== "") {
+      memoryStore.set(key, value);
+      return value;
+    }
   } catch (err) {
-    return fallback;
+    /* opaque origin: the in-memory copy is the only local source */
   }
+  return fallback;
 }
 
 function writeStore(key, value) {
+  memoryStore.set(key, String(value));
   try {
-    window.localStorage.setItem(key, value);
+    window.localStorage.setItem(key, String(value));
   } catch (err) {
-    /* private mode or storage disabled: skin simply is not remembered */
+    /* opaque origin: the server side copy below is the only persistence */
   }
+  schedulePrefSync();
+}
+
+function prefPayload() {
+  const payload = {};
+  for (const name of Object.keys(PREF_KEYS)) {
+    const value = memoryStore.get(PREF_KEYS[name]);
+    if (value) payload[name] = value;
+  }
+  return payload;
+}
+
+// Skin, density and tab changes arrive in bursts (a click can touch two of
+// them), so the write is debounced and skipped when nothing actually moved.
+function schedulePrefSync() {
+  if (prefSyncTimer) window.clearTimeout(prefSyncTimer);
+  prefSyncTimer = window.setTimeout(() => {
+    prefSyncTimer = null;
+    const payload = prefPayload();
+    const fingerprint = JSON.stringify(payload);
+    if (fingerprint === prefSynced) return;
+    prefSynced = fingerprint;
+    apiPost("prefs_save", payload).catch(() => {
+      // Older installs have no such endpoint; retry on the next change.
+      prefSynced = "";
+    });
+  }, 400);
+}
+
+async function loadPrefs() {
+  let payload = null;
+  try {
+    payload = await apiGet("prefs");
+  } catch (err) {
+    return;
+  }
+  const prefs = payload && typeof payload.prefs === "object" ? payload.prefs : null;
+  if (!prefs) return;
+  for (const name of Object.keys(PREF_KEYS)) {
+    const value = prefs[name];
+    if (typeof value === "string" && value !== "") {
+      memoryStore.set(PREF_KEYS[name], value);
+    }
+  }
+  prefSynced = JSON.stringify(prefPayload());
 }
 
 function toast(message, kind) {
@@ -174,6 +249,59 @@ function toast(message, kind) {
   state.toastTimer = window.setTimeout(() => {
     node.hidden = true;
   }, kind === "error" ? 6000 : 3000);
+}
+
+// -- confirm dialog --------------------------------------------------------
+// Native confirm() never opens inside the dashboard sandbox (no allow-modals)
+// and silently evaluates to false, which used to make destructive buttons look
+// dead.  askConfirm() renders the same question in-page and resolves a boolean.
+
+function askConfirm(options) {
+  const layer = el("confirm-layer");
+  const okButton = el("confirm-ok");
+  if (!layer || !okButton) return Promise.resolve(false);
+  const config = options || {};
+  // A queued dialog would leak its promise, so resolve any stale one first.
+  closeConfirm(false);
+  el("confirm-title").textContent = config.title || t("confirm.title", "需要确认");
+  el("confirm-text").textContent = config.message || "";
+  const note = el("confirm-note");
+  note.textContent = config.note || "";
+  note.hidden = !config.note;
+  okButton.textContent = config.confirmLabel || t("action.confirm", "确认");
+  okButton.className = config.danger
+    ? "lv-btn lv-btn-danger-solid"
+    : "lv-btn lv-btn-primary";
+  const origin = document.activeElement;
+  state.confirm.origin =
+    origin && typeof origin.focus === "function" ? origin : null;
+  layer.hidden = false;
+  // Focus has to move after the layer is painted, otherwise it is refused.
+  window.setTimeout(() => okButton.focus(), 0);
+  return new Promise((resolve) => {
+    state.confirm.resolve = resolve;
+  });
+}
+
+// Returns true when a dialog really was open, so the Escape handler can tell
+// whether it consumed the key or should close the drawer instead.
+function closeConfirm(answer) {
+  const layer = el("confirm-layer");
+  if (!layer || layer.hidden) return false;
+  layer.hidden = true;
+  const resolve = state.confirm.resolve;
+  const origin = state.confirm.origin;
+  state.confirm.resolve = null;
+  state.confirm.origin = null;
+  if (origin && document.contains(origin)) {
+    try {
+      origin.focus();
+    } catch (err) {
+      /* the trigger may already be disabled by the action it started */
+    }
+  }
+  if (resolve) resolve(Boolean(answer));
+  return true;
 }
 
 function unwrap(res) {
@@ -1513,9 +1641,17 @@ function fallbackCopy(text, done) {
   area.value = text;
   area.setAttribute("readonly", "readonly");
   area.style.position = "fixed";
+  area.style.top = "-9999px";
   area.style.opacity = "0";
   document.body.appendChild(area);
+  area.focus();
   area.select();
+  try {
+    // Safari ignores select() on a read-only textarea without this.
+    area.setSelectionRange(0, text.length);
+  } catch (err) {
+    /* not every engine implements it on textarea */
+  }
   let ok = false;
   try {
     ok = document.execCommand("copy");
@@ -1897,10 +2033,18 @@ async function downloadExport(name) {
 }
 
 async function purgeExports(names, all) {
-  const question = all
-    ? t("confirm.purgeAll", "清空全部导出包？该操作不可恢复。")
-    : t("confirm.purge", "删除该导出包？");
-  if (!window.confirm(question)) return;
+  const ok = await askConfirm({
+    title: all
+      ? t("confirm.purgeAllTitle", "清空导出包")
+      : t("confirm.purgeTitle", "删除导出包"),
+    message: all
+      ? t("confirm.purgeAll", "清空全部导出包？该操作不可恢复。")
+      : t("confirm.purge", "删除该导出包？"),
+    note: all ? t("confirm.purgeAllNote", "导出目录下保留的历史包会被全部移除。") : "",
+    confirmLabel: t("action.confirmDelete", "确认删除"),
+    danger: true,
+  });
+  if (!ok) return;
   try {
     const result = await apiPost("export_purge", all ? { all: true } : { names });
     toast(
@@ -1975,8 +2119,14 @@ async function downloadFile(id) {
 async function deleteSelected() {
   const ids = Array.from(state.selected).slice(0, 500);
   if (!ids.length) return;
-  const question = t("confirm.delete", "确认删除选中的日志文件？该操作不可恢复。");
-  if (!window.confirm(question + " (" + ids.length + ")")) return;
+  const ok = await askConfirm({
+    title: t("confirm.deleteTitle", "删除日志文件"),
+    message: t("confirm.delete", "确认删除选中的日志文件？该操作不可恢复。"),
+    note: t("confirm.deleteCount", "已选中 %s 个文件").replace("%s", String(ids.length)),
+    confirmLabel: t("action.confirmDelete", "确认删除"),
+    danger: true,
+  });
+  if (!ok) return;
   const button = el("btn-delete");
   button.disabled = true;
   try {
@@ -1998,7 +2148,14 @@ async function deleteSelected() {
 }
 
 async function cleanNow() {
-  if (!window.confirm(t("confirm.clean", "立即执行压缩与清理？超期日志会被删除。"))) return;
+  const ok = await askConfirm({
+    title: t("confirm.cleanTitle", "立即清理"),
+    message: t("confirm.clean", "立即执行压缩与清理？超期日志会被删除。"),
+    note: t("confirm.cleanNote", "超过保留天数的日志会被压缩归档，过期归档会被删除。"),
+    confirmLabel: t("action.confirmClean", "开始清理"),
+    danger: true,
+  });
+  if (!ok) return;
   const button = el("btn-clean");
   button.disabled = true;
   try {
@@ -2303,8 +2460,29 @@ function bindEvents() {
     if (state.view.file) downloadFile(state.view.file.id);
   });
 
+  el("confirm-ok").addEventListener("click", () => closeConfirm(true));
+  for (const node of document.querySelectorAll("[data-confirm-cancel]")) {
+    node.addEventListener("click", () => closeConfirm(false));
+  }
+  // The dialog only has two stops, so the focus trap stays this small.
+  el("confirm-layer").addEventListener("keydown", (event) => {
+    if (event.key !== "Tab") return;
+    const stops = [el("confirm-cancel"), el("confirm-ok")];
+    const at = stops.indexOf(document.activeElement);
+    const next = event.shiftKey
+      ? (at <= 0 ? stops.length - 1 : at - 1)
+      : (at === -1 || at === stops.length - 1 ? 0 : at + 1);
+    event.preventDefault();
+    stops[next].focus();
+  });
+
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
+    // The dialog is modal, so it always wins over the drawer beneath it.
+    if (closeConfirm(false)) {
+      event.stopPropagation();
+      return;
+    }
     const drawer = el("drawer");
     if (drawer && !drawer.hidden) closeDrawer();
   });
@@ -2332,6 +2510,7 @@ async function main() {
     return;
   }
   await bridge.ready();
+  await loadPrefs();
   state.skin = readStore(STORE_SKIN, "console");
   if (SKIN_IDS.indexOf(state.skin) === -1) state.skin = "console";
   state.density = readStore(STORE_DENSITY, "compact") === "cozy" ? "cozy" : "compact";

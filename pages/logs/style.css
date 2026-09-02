@@ -515,6 +515,35 @@ html[data-skin="glass"] .lv-drawer-panel{background:color-mix(in srgb,var(--surf
 .lv-toast[data-kind="ok"]{border-color:color-mix(in srgb,var(--ok) 55%,transparent);}
 .lv-toast[data-kind="err"]{border-color:color-mix(in srgb,var(--err) 60%,transparent);}
 
+/* ---------- confirm dialog ---------- */
+/* The dashboard iframe has no allow-modals, so native confirm() dialogs are
+   suppressed; every destructive action asks through this in-page layer. */
+.lv-modal-layer{position:fixed;inset:0;z-index:70;display:flex;align-items:center;justify-content:center;padding:24px;}
+.lv-modal-layer[hidden]{display:none;}
+.lv-modal-veil{position:absolute;inset:0;background:var(--scrim);backdrop-filter:blur(2px);-webkit-backdrop-filter:blur(2px);}
+.lv-modal{
+  position:relative;z-index:1;display:flex;flex-direction:column;gap:var(--gap);
+  width:min(440px,92vw);max-height:calc(100vh - 48px);overflow:auto;min-width:0;
+  padding:calc(var(--pad-y) + 8px) calc(var(--pad-x) + 6px);
+  border:1px solid var(--border-strong);border-radius:var(--radius);
+  background:var(--surface);color:var(--text);
+  box-shadow:0 18px 48px rgba(0,0,0,.4);
+  backdrop-filter:blur(calc(var(--blur) + 6px));-webkit-backdrop-filter:blur(calc(var(--blur) + 6px));
+  animation:lv-pop .16s ease-out;
+}
+html[data-skin="glass"] .lv-modal{background:color-mix(in srgb,var(--surface) 88%,transparent);box-shadow:0 18px 52px rgba(0,0,0,.44),var(--glow);}
+@keyframes lv-pop{from{transform:scale(.97);opacity:.35;}to{transform:none;opacity:1;}}
+@media (prefers-reduced-motion:reduce){.lv-modal{animation:none;}}
+.lv-modal-head{display:flex;align-items:center;gap:8px;min-width:0;}
+.lv-modal-head h2{margin:0;min-width:0;font-size:calc(var(--fs) + 2px);font-weight:600;overflow-wrap:anywhere;}
+.lv-modal-ico{flex:0 0 auto;display:inline-flex;color:var(--warn);}
+.lv-modal-text{margin:0;font-size:var(--fs);line-height:var(--lh);overflow-wrap:anywhere;}
+.lv-modal-note{margin:0;color:var(--muted);font-size:var(--fs-sm);line-height:var(--lh);overflow-wrap:anywhere;}
+.lv-modal-note[hidden]{display:none;}
+.lv-modal-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;}
+.lv-btn-danger-solid{background:var(--err);border-color:var(--err);color:#fff;font-weight:600;}
+.lv-btn-danger-solid:hover:not(:disabled){background:var(--err);border-color:var(--err);color:#fff;filter:brightness(1.08);}
+
 /* ---------- scrollbars ---------- */
 .lv-panel,.lv-stream,.lv-tree,.lv-tablewrap,.lv-tabs{scrollbar-width:thin;scrollbar-color:var(--border-strong) transparent;}
 .lv-panel::-webkit-scrollbar,.lv-stream::-webkit-scrollbar,.lv-tree::-webkit-scrollbar,.lv-tablewrap::-webkit-scrollbar,.lv-tabs::-webkit-scrollbar{width:9px;height:9px;}
@@ -585,4 +614,7 @@ html[data-skin="glass"] .lv-chip.is-on{box-shadow:var(--glow);}
   .lv-line .lv-tag{display:none;}
   .lv-table td:nth-child(5),.lv-table th:nth-child(5){display:none;}
   .lv-drawer-panel{width:100vw;border-left:0;}
+  .lv-modal-layer{padding:14px;}
+  .lv-modal{width:100%;}
+  .lv-modal-actions{flex-direction:column-reverse;align-items:stretch;}
 }

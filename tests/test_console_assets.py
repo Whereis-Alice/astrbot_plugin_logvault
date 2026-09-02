@@ -180,6 +180,42 @@ class ConsoleAssetTests(unittest.TestCase):
         # The two-column layout has to collapse on narrow consoles.
         self.assertIn(".lv-export{grid-template-columns:minmax(0,1fr);}", self.css)
 
+    def test_no_native_dialog_is_used(self):
+        # The dashboard iframe is sandboxed with "allow-scripts allow-forms
+        # allow-downloads", so confirm/alert/prompt are suppressed and return
+        # false.  Destructive buttons must go through the in-page dialog.
+        for call in ("window.confirm", "window.alert", "window.prompt"):
+            self.assertNotIn(call, self.js)
+        self.assertIn("function askConfirm(", self.js)
+        self.assertIn("function closeConfirm(", self.js)
+        self.assertEqual(3, self.js.count("await askConfirm({"))
+
+    def test_confirm_dialog_markup_is_accessible(self):
+        for ident in (
+            "confirm-layer",
+            "confirm-ok",
+            "confirm-cancel",
+            "confirm-title",
+            "confirm-text",
+            "confirm-note",
+        ):
+            self.assertIn(f'id="{ident}"', self.html)
+        self.assertIn('aria-modal="true"', self.html)
+        self.assertIn('aria-labelledby="confirm-title"', self.html)
+        self.assertIn('aria-describedby="confirm-text"', self.html)
+        # Hiding is driven by the attribute so the layer keeps display:flex.
+        self.assertIn(".lv-modal-layer[hidden]{display:none;}", self.css)
+        self.assertIn(".lv-btn-danger-solid{", self.css)
+
+    def test_preferences_do_not_rely_on_localstorage(self):
+        # Same sandbox: the origin is opaque, so localStorage throws on read
+        # and write and the skin/density/tab choice has to round-trip through
+        # the Web API instead.
+        self.assertIn("const memoryStore = new Map();", self.js)
+        self.assertIn('apiGet("prefs")', self.js)
+        self.assertIn('apiPost("prefs_save"', self.js)
+        self.assertIn("await loadPrefs();", self.js)
+
     def test_export_levels_are_rendered_from_the_script(self):
         self.assertIn("EXPORT_LEVELS", self.js)
         for level in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
