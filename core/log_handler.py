@@ -31,6 +31,44 @@ _compress_executor = ThreadPoolExecutor(
 )
 
 
+#: ``<base>.log.<slot>`` names are recycled by every rollover, so an archive
+#: named after the slot number is replaced again on the next cycle.
+_ROTATION_SLOT_RE = re.compile(r"^(?P<base>.+\.log)\.(?P<slot>\d+)$", re.IGNORECASE)
+
+
+def archive_destination(source: Path, mtime: float | None = None) -> Path:
+    """Return a collision-free ``.gz`` path for a closed rotated log.
+
+    Numbered rotation slots (``all.log.1`` .. ``all.log.5``) are reused on every
+    rollover.  Naming the archive after the slot therefore made each cycle
+    overwrite the previous archive through ``os.replace``: the archive count
+    never grew and older generations were destroyed silently.  Stamping the
+    archive with the source mtime keeps every generation and leaves retention
+    (age and total size) as the only thing that removes them.
+    """
+
+    match = _ROTATION_SLOT_RE.match(source.name)
+    if match:
+        if mtime is None:
+            try:
+                mtime = source.stat().st_mtime
+            except OSError:
+                mtime = None
+        moment = datetime.fromtimestamp(mtime) if mtime else datetime.now()
+        stem = f"{match.group('base')}.{moment.strftime('%Y%m%d-%H%M%S')}"
+    else:
+        # Time rotation already produces unique names such as
+        # ``all.log.2026-09-01``; those stay readable as-is.
+        stem = source.name
+
+    candidate = source.with_name(f"{stem}.gz")
+    counter = 1
+    while candidate.exists():
+        candidate = source.with_name(f"{stem}-{counter}.gz")
+        counter += 1
+    return candidate
+
+
 def _atomic_compress_file(filepath: str | os.PathLike[str]) -> bool:
     """Compress a closed rotated file and preserve its original mtime."""
 
@@ -38,12 +76,15 @@ def _atomic_compress_file(filepath: str | os.PathLike[str]) -> bool:
     if not source.is_file():
         return False
 
-    destination = source.with_name(source.name + ".gz")
+    try:
+        source_stat = source.stat()
+    except OSError:
+        return False
+    destination = archive_destination(source, source_stat.st_mtime)
     temporary = destination.with_name(
         f".{destination.name}.tmp-{os.getpid()}-{threading.get_ident()}"
     )
     try:
-        source_stat = source.stat()
         with source.open("rb") as source_stream, gzip.open(temporary, "wb") as out:
             shutil.copyfileobj(source_stream, out)
         os.replace(temporary, destination)

@@ -47,8 +47,31 @@
       },
       "card": {
         "capture": "Capture pipeline",
+        "clean": "Maintenance result",
         "dist": "Category usage",
         "sources": "Log sources"
+      },
+      "clean": {
+        "acted": "Actions taken",
+        "exports": "Export bundles",
+        "forceNow": "Compress %s rotated logs now",
+        "limitAge": "delete >%s d",
+        "limitCleanOff": "auto clean disabled",
+        "limitGz": "compress >%s d",
+        "limitGzForced": "compression: delay ignored this run",
+        "limitGzOff": "compression disabled",
+        "limitSize": "total >%s MB",
+        "limits": "Active thresholds",
+        "next": "Next compression",
+        "nextIn": "in about %s",
+        "noop": "Every file is still within the configured thresholds, so nothing had to be compressed or deleted. This is the expected state.",
+        "oldest": "Oldest archive",
+        "oldestAge": "%s ago",
+        "scanned": "Scanned",
+        "skipActive": "being written",
+        "skipGz": "archived",
+        "skipNew": "not old enough",
+        "skipped": "Skipped"
       },
       "common": {
         "off": "not attached",
@@ -56,6 +79,9 @@
       },
       "confirm": {
         "clean": "Run compression and cleanup now? Expired logs will be deleted.",
+        "cleanDeep": "Archive every rotated log right now, ignoring the compression delay?",
+        "cleanDeepNote": "Only closed rotated files are compressed. Active logs are untouched and archives stay readable and searchable.",
+        "cleanDeepTitle": "Compress rotated logs now",
         "cleanNote": "Logs past the retention window are archived and expired archives are removed.",
         "cleanTitle": "Clean now",
         "delete": "Delete the selected log files? This cannot be undone.",
@@ -252,6 +278,7 @@
       },
       "title": "LogVault Console",
       "toast": {
+        "cleanNoop": "nothing to clean, see overview",
         "compressed": "Compressed",
         "copied": "Copied to clipboard",
         "copyFailed": "Copy failed, please select the text manually",
@@ -275,8 +302,11 @@
         "empty": "No matching category"
       },
       "unit": {
+        "day": "d",
         "file": "files",
+        "hour": "h",
         "line": "lines",
+        "minute": "min",
         "source": "sources"
       },
       "view": {

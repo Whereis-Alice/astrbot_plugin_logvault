@@ -3,5 +3,5 @@ display_name: LogVault
 desc: AstrBot 日志持久化与安全导出插件：loguru 全量捕获，按 Core/插件/错误分类，支持轮换、压缩、清理、搜索、按记录时间切片导出；内置多皮肤 WebUI 控制台（实时日志流、全局搜索、导出中心、采集诊断），命令入口 /log。
 author: Whereis-Alice
 repo: "https://github.com/Whereis-Alice/astrbot_plugin_logvault"
-version: 2.3.3
+version: 2.3.4
 astrbot_version: ">=4.16,<5"

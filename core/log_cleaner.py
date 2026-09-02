@@ -10,6 +10,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
+# Archive naming is shared with the rotating handlers so a slot recycled by
+# doRollover and a slot compressed here can never claim the same .gz name.
+from .log_handler import archive_destination
+
 
 @dataclass(frozen=True)
 class LogFileInfo:
@@ -78,18 +82,41 @@ class LogCleaner:
         except (TypeError, ValueError):
             return default
 
-    async def cleanup(self) -> dict[str, int]:
-        result = {"compressed": 0, "deleted": 0, "freed_bytes": 0}
+    async def cleanup(self, force_compress: bool = False) -> dict:
+        """Run one maintenance pass and describe why it did what it did.
 
-        if self.config.get("enable_compression", True):
-            days = self._positive_int(self.config.get("compression_after_days", 1), 1)
-            result["compressed"] = await self._compress_old_logs(days)
+        ``compressed``/``deleted``/``freed_bytes`` are the actions taken; the
+        remaining keys describe the input that produced them.  A pass with
+        nothing to do reported three zeros and was indistinguishable from a
+        failed request, which is the most common support question.
 
-        if self.config.get("auto_clean_enabled", True):
-            max_age = self._positive_int(self.config.get("max_age_days", 30), 30)
-            max_size_mb = self._positive_int(
-                self.config.get("max_total_size_mb", 500), 500
-            )
+        ``force_compress`` drops the age threshold for the compression pass.
+        Scheduled runs keep the configured delay, but a human who clicks
+        "clean now" means every closed rotated file, not only yesterday's.
+        """
+
+        compression_enabled = bool(self.config.get("enable_compression", True))
+        auto_clean_enabled = bool(self.config.get("auto_clean_enabled", True))
+        configured_days = self._positive_int(
+            self.config.get("compression_after_days", 1), 1
+        )
+        compression_days = 0 if force_compress else configured_days
+        max_age = self._positive_int(self.config.get("max_age_days", 30), 30)
+        max_size_mb = self._positive_int(self.config.get("max_total_size_mb", 500), 500)
+
+        # Snapshot the tree before the passes mutate it so the report explains
+        # the state the thresholds were applied to.
+        files = await asyncio.to_thread(self._scan_log_files)
+        result: dict = {"compressed": 0, "deleted": 0, "freed_bytes": 0}
+        result.update(
+            self._explain(files, compression_days if compression_enabled else 0)
+        )
+        result["forced"] = bool(force_compress)
+
+        if compression_enabled:
+            result["compressed"] = await self._compress_old_logs(compression_days)
+
+        if auto_clean_enabled:
             deleted, freed = await self._clean_old_logs(
                 max_age, max_size_mb * 1024 * 1024
             )
@@ -103,7 +130,62 @@ class LogCleaner:
         result["deleted"] += purged
         result["freed_bytes"] += purged_bytes
 
+        result["thresholds"] = {
+            "compression_after_days": (
+                configured_days if compression_enabled else None
+            ),
+            "max_age_days": max_age if auto_clean_enabled else None,
+            "max_total_size_mb": max_size_mb if auto_clean_enabled else None,
+        }
         return result
+
+    def _explain(self, files: list[LogFileInfo], compression_days: int) -> dict:
+        """Summarise the scan and why each group is out of scope."""
+
+        now = datetime.now()
+        threshold = (
+            now - timedelta(days=compression_days) if compression_days > 0 else None
+        )
+        active = 0
+        already_compressed = 0
+        too_new = 0
+        oldest: datetime | None = None
+        soonest_hours: float | None = None
+        for info in files:
+            if info.is_active:
+                active += 1
+                continue
+            if oldest is None or info.mtime < oldest:
+                oldest = info.mtime
+            if info.is_compressed:
+                already_compressed += 1
+                continue
+            if threshold is not None and info.mtime >= threshold:
+                too_new += 1
+                due_hours = (
+                    info.mtime + timedelta(days=compression_days) - now
+                ).total_seconds() / 3600
+                if soonest_hours is None or due_hours < soonest_hours:
+                    soonest_hours = due_hours
+        return {
+            "scanned": len(files),
+            "total_bytes": sum(info.size for info in files),
+            "skipped": {
+                "active": active,
+                "already_compressed": already_compressed,
+                "too_new": too_new,
+            },
+            "oldest_age_hours": (
+                round((now - oldest).total_seconds() / 3600, 1)
+                if oldest is not None
+                else None
+            ),
+            "next_compress_in_hours": (
+                round(max(soonest_hours, 0.0), 1)
+                if soonest_hours is not None
+                else None
+            ),
+        }
 
     def _clean_exports(self) -> tuple[int, int]:
         """Enforce age, count and size limits on data/exports.
@@ -172,11 +254,15 @@ class LogCleaner:
         return deleted, freed
 
     async def _compress_old_logs(self, days: int) -> int:
-        threshold = datetime.now() - timedelta(days=days)
+        # days <= 0 means "no delay"; a forced run must not depend on clock
+        # granularity to accept a file that was rotated moments ago.
+        threshold = datetime.now() - timedelta(days=days) if days > 0 else None
         count = 0
         for info in self._scan_log_files():
             # Never unlink or replace the file a FileHandler may still hold.
-            if info.is_active or info.is_compressed or info.mtime >= threshold:
+            if info.is_active or info.is_compressed:
+                continue
+            if threshold is not None and info.mtime >= threshold:
                 continue
             if await self._compress_file(info.path):
                 count += 1
@@ -192,7 +278,7 @@ class LogCleaner:
             return False
         try:
             source_stat = filepath.stat()
-            destination = filepath.with_name(filepath.name + ".gz")
+            destination = archive_destination(filepath, source_stat.st_mtime)
             temporary = destination.with_name(
                 f".{destination.name}.tmp-{os.getpid()}"
             )

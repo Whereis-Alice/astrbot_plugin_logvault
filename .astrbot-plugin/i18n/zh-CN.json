@@ -47,8 +47,31 @@
       },
       "card": {
         "capture": "采集通路",
+        "clean": "维护结果",
         "dist": "分类占用",
         "sources": "日志来源"
+      },
+      "clean": {
+        "acted": "本次动作",
+        "exports": "导出包",
+        "forceNow": "立即压缩 %s 个轮换日志",
+        "limitAge": "删除 >%s 天",
+        "limitCleanOff": "自动清理已关闭",
+        "limitGz": "压缩 >%s 天",
+        "limitGzForced": "压缩：本次忽略延迟",
+        "limitGzOff": "压缩已关闭",
+        "limitSize": "总量 >%s MB",
+        "limits": "生效阈值",
+        "next": "下一批压缩",
+        "nextIn": "约 %s后",
+        "noop": "所有文件都还在阈值内，无需压缩或删除；这属于正常状态。",
+        "oldest": "最旧归档",
+        "oldestAge": "%s前",
+        "scanned": "扫描范围",
+        "skipActive": "写入中",
+        "skipGz": "已归档",
+        "skipNew": "未到压缩时间",
+        "skipped": "跳过"
       },
       "common": {
         "off": "未接入",
@@ -56,6 +79,9 @@
       },
       "confirm": {
         "clean": "立即执行压缩与清理？超期日志会被删除。",
+        "cleanDeep": "忽略压缩延迟，立即归档所有已轮换的日志？",
+        "cleanDeepNote": "只压缩已关闭的轮换文件，正在写入的日志不受影响，压缩后仍可正常查看与搜索。",
+        "cleanDeepTitle": "立即压缩轮换日志",
         "cleanNote": "超过保留天数的日志会被压缩归档，过期归档会被删除。",
         "cleanTitle": "立即清理",
         "delete": "确认删除选中的日志文件？该操作不可恢复。",
@@ -252,6 +278,7 @@
       },
       "title": "LogVault 控制台",
       "toast": {
+        "cleanNoop": "无需清理，原因见总览",
         "compressed": "压缩",
         "copied": "已复制到剪贴板",
         "copyFailed": "复制失败，请手动选择文本",
@@ -275,8 +302,11 @@
         "empty": "没有匹配的分类"
       },
       "unit": {
+        "day": "天",
         "file": "个",
+        "hour": "小时",
         "line": "行",
+        "minute": "分钟",
         "source": "个来源"
       },
       "view": {

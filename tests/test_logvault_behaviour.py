@@ -16,7 +16,11 @@ if str(PLUGIN_ROOT) not in sys.path:
 from core.command_handler import CommandHandler
 from core.config_manager import ConfigManager
 from core.log_cleaner import LogCleaner
-from core.log_handler import LogVaultHandler
+from core.log_handler import (
+    CompressedRotatingFileHandler,
+    LogVaultHandler,
+    archive_destination,
+)
 from core.sensitive_filter import SensitiveFilter
 
 
@@ -45,7 +49,12 @@ class LogVaultBehaviourTests(unittest.TestCase):
 
             self.assertEqual(compressed, 1)
             self.assertTrue(active.exists())
-            self.assertTrue((root / "plugins" / "demo" / "plugin.log.1.gz").exists())
+            self.assertFalse(rotated.exists())
+            # Slot numbers are recycled by every rollover, so the archive is
+            # stamped from the source mtime instead of reusing ".1.gz".
+            archives = list((root / "plugins" / "demo").glob("plugin.log.*.gz"))
+            self.assertEqual(1, len(archives))
+            self.assertRegex(archives[0].name, r"^plugin\.log\.\d{8}-\d{6}\.gz$")
 
     def test_dynamic_card_log_after_start_can_be_sent(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -393,6 +402,169 @@ class LogVaultBehaviourTests(unittest.TestCase):
             config.get_host_log_dirs(),
             ["/srv/astrbot/logs", "/var/log/astrbot"],
         )
+
+
+class ArchiveRetentionTests(unittest.TestCase):
+    """Rotation slots are recycled, so archives must not be keyed on them."""
+
+    def test_repeated_rollovers_keep_every_archive(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            base = root / "all.log"
+            handler = CompressedRotatingFileHandler(
+                str(base),
+                maxBytes=64,
+                backupCount=1,
+                encoding="utf-8",
+                enable_compression=True,
+            )
+            try:
+                for generation in range(4):
+                    base.write_text(f"generation-{generation}\n" * 8, encoding="utf-8")
+                    handler.doRollover()
+            finally:
+                handler.close()
+
+            archives = sorted(root.glob("all.log.*.gz"))
+            # backupCount=1 means every rollover but the first archives one
+            # generation.  Reusing "all.log.1.gz" collapsed them into a single
+            # file, so history disappeared without a trace.
+            self.assertGreaterEqual(len(archives), 3)
+            recovered = set()
+            for archive in archives:
+                with gzip.open(archive, "rt", encoding="utf-8") as stream:
+                    recovered.add(stream.readline().strip())
+            self.assertEqual(len(archives), len(recovered))
+
+    def test_cleaner_archives_do_not_overwrite_handler_archives(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            first = root / "all.log.1"
+            first.write_text("older\n", encoding="utf-8")
+            aged = first.stat().st_mtime - 5 * 86400
+            os.utime(first, (aged, aged))
+            cleaner = LogCleaner(root, {"enable_compression": True})
+            self.assertEqual(1, asyncio.run(cleaner._compress_old_logs(1)))
+
+            # The next rollover recreates the same slot name.
+            second = root / "all.log.1"
+            second.write_text("newer\n", encoding="utf-8")
+            aged = second.stat().st_mtime - 4 * 86400
+            os.utime(second, (aged, aged))
+            self.assertEqual(1, asyncio.run(cleaner._compress_old_logs(1)))
+
+            archives = sorted(root.glob("all.log.*.gz"))
+            self.assertEqual(2, len(archives))
+            payloads = set()
+            for archive in archives:
+                with gzip.open(archive, "rt", encoding="utf-8") as stream:
+                    payloads.add(stream.read().strip())
+            self.assertEqual({"older", "newer"}, payloads)
+
+    def test_same_second_archives_get_a_counter_suffix(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "all.log.1"
+            source.write_text("payload\n", encoding="utf-8")
+            stamp = source.stat().st_mtime
+            taken = archive_destination(source, stamp)
+            taken.write_bytes(b"")
+            self.assertEqual(f"{taken.name[:-3]}-1.gz", archive_destination(source, stamp).name)
+
+    def test_time_rotation_names_keep_their_own_suffix(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / "all.log.2026-09-01"
+            source.write_text("payload\n", encoding="utf-8")
+            self.assertEqual("all.log.2026-09-01.gz", archive_destination(source).name)
+
+
+class CleanupReportTests(unittest.TestCase):
+    """A pass with nothing to do must say why instead of reporting bare zeros."""
+
+    def test_report_explains_why_nothing_was_touched(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "all").mkdir()
+            active = root / "all" / "all.log"
+            fresh = root / "all" / "all.log.1"
+            archived = root / "all" / "all.log.20260101-000000.gz"
+            active.write_text("active\n", encoding="utf-8")
+            fresh.write_text("rotated\n", encoding="utf-8")
+            archived.write_bytes(b"gz")
+            recent = fresh.stat().st_mtime - 6 * 3600
+            os.utime(fresh, (recent, recent))
+
+            cleaner = LogCleaner(root, {"compression_after_days": 1})
+            result = asyncio.run(cleaner.cleanup())
+
+            self.assertEqual(0, result["compressed"])
+            self.assertEqual(0, result["deleted"])
+            self.assertEqual(3, result["scanned"])
+            self.assertEqual(1, result["skipped"]["active"])
+            self.assertEqual(1, result["skipped"]["already_compressed"])
+            self.assertEqual(1, result["skipped"]["too_new"])
+            self.assertEqual(1, result["thresholds"]["compression_after_days"])
+            self.assertEqual(30, result["thresholds"]["max_age_days"])
+            self.assertEqual(500, result["thresholds"]["max_total_size_mb"])
+            # 6 hours old with a 1 day threshold leaves roughly 18 hours.
+            self.assertAlmostEqual(18.0, result["next_compress_in_hours"], delta=0.5)
+            self.assertGreater(result["total_bytes"], 0)
+
+    def test_disabled_passes_report_no_thresholds(self):
+        with tempfile.TemporaryDirectory() as temp:
+            cleaner = LogCleaner(
+                Path(temp),
+                {"enable_compression": False, "auto_clean_enabled": False},
+            )
+            result = asyncio.run(cleaner.cleanup())
+
+            self.assertIsNone(result["thresholds"]["compression_after_days"])
+            self.assertIsNone(result["thresholds"]["max_age_days"])
+            self.assertIsNone(result["next_compress_in_hours"])
+            self.assertEqual(0, result["scanned"])
+
+
+class ForcedCompressionTests(unittest.TestCase):
+    """"Clean now" from the console must not obey the overnight delay."""
+
+    def test_forced_pass_archives_todays_rotation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "all").mkdir()
+            (root / "all" / "all.log").write_text("active\n", encoding="utf-8")
+            rotated = root / "all" / "all.log.1"
+            rotated.write_text("rotated\n" * 50, encoding="utf-8")
+            recent = rotated.stat().st_mtime - 6 * 3600
+            os.utime(rotated, (recent, recent))
+
+            cleaner = LogCleaner(root, {"compression_after_days": 1})
+            result = asyncio.run(cleaner.cleanup(force_compress=True))
+
+            self.assertEqual(1, result["compressed"])
+            self.assertTrue(result["forced"])
+            self.assertFalse(rotated.exists())
+            archives = list((root / "all").glob("all.log.*.gz"))
+            self.assertEqual(1, len(archives))
+            # The report still shows the configured delay: the override was a
+            # one-off, not a settings change.
+            self.assertEqual(1, result["thresholds"]["compression_after_days"])
+            self.assertEqual(0, result["skipped"]["too_new"])
+            self.assertIsNone(result["next_compress_in_hours"])
+
+    def test_forced_pass_leaves_the_active_stream_alone(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "all").mkdir()
+            active = root / "all" / "all.log"
+            active.write_text("active\n", encoding="utf-8")
+
+            cleaner = LogCleaner(root, {})
+            result = asyncio.run(cleaner.cleanup(force_compress=True))
+
+            self.assertEqual(0, result["compressed"])
+            self.assertTrue(active.exists())
+            self.assertFalse(active.with_suffix(".log.gz").exists())
+            self.assertEqual(1, result["skipped"]["active"])
 
 
 if __name__ == "__main__":

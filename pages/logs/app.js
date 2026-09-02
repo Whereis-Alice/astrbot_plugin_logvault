@@ -1,4 +1,4 @@
-// LogVault console (v2.3.3)
+// LogVault console (v2.3.4)
 // A tab based operations console for the plugin Web API in core/web_api.py.
 // Layout rules: every flex/grid child sets min-width:0 in style.css, so long
 // paths, plugin names and warnings truncate instead of stretching the page.
@@ -732,6 +732,117 @@ function renderSourcesCard() {
       })
       .join("") +
     "</div>";
+}
+
+// Nothing to clean used to look exactly like a failed request: three zeros in a
+// toast.  The card spells out what was scanned and which threshold held each
+// group back, so "0" becomes an answer instead of a symptom.
+function formatDuration(hours) {
+  const value = Number(hours);
+  if (!Number.isFinite(value) || value < 0) return "-";
+  if (value < 1) {
+    return Math.max(1, Math.round(value * 60)) + " " + t("unit.minute", "分钟");
+  }
+  if (value < 48) {
+    const rounded = value < 10 ? Math.round(value * 10) / 10 : Math.round(value);
+    return rounded + " " + t("unit.hour", "小时");
+  }
+  return Math.round(value / 24) + " " + t("unit.day", "天");
+}
+
+function thresholdText(limits, forced) {
+  const parts = [];
+  if (forced && limits.compression_after_days) {
+    parts.push(t("clean.limitGzForced", "压缩：本次忽略延迟"));
+  } else if (limits.compression_after_days) {
+    parts.push(
+      t("clean.limitGz", "压缩 >%s 天").replace("%s", String(limits.compression_after_days))
+    );
+  } else {
+    parts.push(t("clean.limitGzOff", "压缩已关闭"));
+  }
+  if (limits.max_age_days) {
+    parts.push(t("clean.limitAge", "删除 >%s 天").replace("%s", String(limits.max_age_days)));
+  }
+  if (limits.max_total_size_mb) {
+    parts.push(
+      t("clean.limitSize", "总量 >%s MB").replace("%s", String(limits.max_total_size_mb))
+    );
+  }
+  if (!limits.max_age_days && !limits.max_total_size_mb) {
+    parts.push(t("clean.limitCleanOff", "自动清理已关闭"));
+  }
+  return parts.join(" · ");
+}
+
+function renderCleanReport(result) {
+  const card = el("clean-card");
+  const body = el("clean-body");
+  const pill = el("clean-when");
+  if (!card || !body) return;
+  const data = result || {};
+  const skipped = data.skipped || {};
+  const limits = data.thresholds || {};
+  const acted = (data.compressed || 0) + (data.deleted || 0);
+  const rows = [];
+  rows.push([
+    t("clean.acted", "本次动作"),
+    t("toast.compressed", "压缩") + " " + (data.compressed || 0) + " · " +
+      t("toast.deleted", "已删除") + " " + (data.deleted || 0) + " · " +
+      t("toast.freed", "释放") + " " + formatSize(data.freed_bytes),
+  ]);
+  rows.push([
+    t("clean.scanned", "扫描范围"),
+    (data.scanned || 0) + " " + t("unit.file", "个") + " · " + formatSize(data.total_bytes),
+  ]);
+  rows.push([
+    t("clean.skipped", "跳过"),
+    t("clean.skipActive", "写入中") + " " + (skipped.active || 0) + " · " +
+      t("clean.skipGz", "已归档") + " " + (skipped.already_compressed || 0) + " · " +
+      t("clean.skipNew", "未到压缩时间") + " " + (skipped.too_new || 0),
+  ]);
+  rows.push([t("clean.limits", "生效阈值"), thresholdText(limits, data.forced)]);
+  if (data.next_compress_in_hours !== null && data.next_compress_in_hours !== undefined) {
+    rows.push([
+      t("clean.next", "下一批压缩"),
+      t("clean.nextIn", "约 %s 后").replace(
+        "%s",
+        formatDuration(data.next_compress_in_hours)
+      ),
+    ]);
+  }
+  if (data.oldest_age_hours !== null && data.oldest_age_hours !== undefined) {
+    rows.push([
+      t("clean.oldest", "最旧归档"),
+      t("clean.oldestAge", "%s 前").replace("%s", formatDuration(data.oldest_age_hours)),
+    ]);
+  }
+  if (data.exports_deleted) {
+    rows.push([t("clean.exports", "导出包"), String(data.exports_deleted)]);
+  }
+  const note = acted
+    ? ""
+    : '<p class="lv-muted">' +
+      esc(t("clean.noop", "所有文件都还在阈值内，无需压缩或删除；这属于正常状态。")) +
+      "</p>";
+  body.innerHTML = kvHtml(rows) + note;
+  // Waiting a day for the first archive is the usual reason a manual run
+  // looks idle, so offer the one action that is safe to take right now.
+  const canForce = !data.forced && (skipped.too_new || 0) > 0;
+  const actions = el("clean-actions");
+  const force = el("btn-clean-deep");
+  if (actions && force) {
+    force.textContent = t("clean.forceNow", "立即压缩 %s 个轮换日志").replace(
+      "%s",
+      String(skipped.too_new || 0)
+    );
+    actions.hidden = !canForce;
+  }
+  if (pill) {
+    pill.textContent = new Date().toLocaleTimeString();
+    pill.dataset.kind = acted ? "ok" : "info";
+  }
+  card.hidden = false;
 }
 
 function renderDistCard() {
@@ -2147,29 +2258,48 @@ async function deleteSelected() {
   }
 }
 
-async function cleanNow() {
+async function cleanNow(deep) {
   const ok = await askConfirm({
-    title: t("confirm.cleanTitle", "立即清理"),
-    message: t("confirm.clean", "立即执行压缩与清理？超期日志会被删除。"),
-    note: t("confirm.cleanNote", "超过保留天数的日志会被压缩归档，过期归档会被删除。"),
+    title: deep
+      ? t("confirm.cleanDeepTitle", "立即压缩轮换日志")
+      : t("confirm.cleanTitle", "立即清理"),
+    message: deep
+      ? t("confirm.cleanDeep", "忽略压缩延迟，立即归档所有已轮换的日志？")
+      : t("confirm.clean", "立即执行压缩与清理？超期日志会被删除。"),
+    note: deep
+      ? t("confirm.cleanDeepNote", "只压缩已关闭的轮换文件，正在写入的日志不受影响，压缩后仍可正常查看与搜索。")
+      : t("confirm.cleanNote", "超过保留天数的日志会被压缩归档，过期归档会被删除。"),
     confirmLabel: t("action.confirmClean", "开始清理"),
     danger: true,
   });
   if (!ok) return;
-  const button = el("btn-clean");
-  button.disabled = true;
+  // Both buttons run the same pass, so lock them together: a second click
+  // while the first pass is still scanning would duplicate the work.
+  const buttons = [el("btn-clean"), el("btn-clean-deep")].filter(Boolean);
+  buttons.forEach((node) => {
+    node.disabled = true;
+  });
   try {
-    const result = await apiPost("clean");
-    toast(
-      t("toast.compressed", "压缩") + " " + (result.compressed || 0) + " · " +
-        t("toast.deleted", "已删除") + " " + (result.deleted || 0) + " · " +
-        t("toast.freed", "释放") + " " + formatSize(result.freed_bytes)
-    );
+    const result = await apiPost("clean", deep ? { deep: true } : {});
+    const acted = (result.compressed || 0) + (result.deleted || 0);
+    const parts = [
+      t("toast.compressed", "压缩") + " " + (result.compressed || 0),
+      t("toast.deleted", "已删除") + " " + (result.deleted || 0),
+      t("toast.freed", "释放") + " " + formatSize(result.freed_bytes),
+    ];
+    if (!acted) parts.push(t("toast.cleanNoop", "无需清理，原因见总览"));
+    toast(parts.join(" · "));
+    renderCleanReport(result);
+    // The report lives on the overview panel, and a run that changed nothing is
+    // exactly the case where the user needs to read it.
+    if (state.tab !== "overview") setTab("overview");
     await loadOverview(true);
   } catch (err) {
     toast(errorText(err), "error");
   } finally {
-    button.disabled = false;
+    buttons.forEach((node) => {
+      node.disabled = false;
+    });
   }
 }
 
@@ -2251,7 +2381,8 @@ function bindEvents() {
   el("skin-select").addEventListener("change", (event) => setSkin(event.target.value));
   el("btn-density").addEventListener("click", toggleDensity);
   el("btn-refresh").addEventListener("click", () => loadOverview(false));
-  el("btn-clean").addEventListener("click", cleanNow);
+  el("btn-clean").addEventListener("click", () => cleanNow(false));
+  el("btn-clean-deep").addEventListener("click", () => cleanNow(true));
 
   el("warn-banner").addEventListener("click", (event) => {
     const toggle = event.target.closest("[data-banner-toggle]");
